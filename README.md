@@ -31,6 +31,8 @@ Public leagues don't need them, but `SWID` lets the tools know which team is you
 
 ### 2. Deploy to Google Cloud
 
+Your project needs billing turned on. The free trial counts.
+
 1. Open https://console.cloud.google.com with your project selected, then click the **>_** button
    (Activate Cloud Shell) at the top right.
 2. Paste:
@@ -39,7 +41,7 @@ Public leagues don't need them, but `SWID` lets the tools know which team is you
    cd ESPN-fantasy-mcp
    ./deploy.sh
    ```
-3. Enter the league ID and cookies when asked. If Google asks to enable services, answer `y`.
+3. Enter the league ID and cookies when asked. If Google asks a yes/no question, answer `y`.
    The first deploy takes a few minutes.
 4. Copy the connector URL it prints at the end. Keep it private: anyone with it can read your league.
 
@@ -53,11 +55,11 @@ Public leagues don't need them, but `SWID` lets the tools know which team is you
 
 - **New code:** in Cloud Shell, run `cd ESPN-fantasy-mcp && git pull && ./deploy.sh`. It keeps your
   settings and the connector URL stays the same.
-- **Tools say ESPN denied access:** your cookies expired. Get fresh ones (step 1), then in the Cloud
-  Console open Cloud Run > `espn-fantasy-mcp` > **Edit & deploy new revision** > **Variables &
-  Secrets**, and replace `ESPN_S2` and `SWID`.
+- **Claude says your league "cannot be accessed with the provided credentials":** your cookies
+  expired. Get fresh ones (step 1), then in the Cloud Console open Cloud Run > `espn-fantasy-mcp` >
+  **Edit & deploy new revision** > **Variables & Secrets**, and replace `ESPN_S2` and `SWID`.
 - **Run the tests:** `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt pytest && .venv/bin/pytest`.
-  They use sample ESPN data from the [espn-api](https://github.com/cwendt94/espn-api) project.
+  The first run downloads sample ESPN data from the [espn-api](https://github.com/cwendt94/espn-api) project.
 
 ## Settings
 
@@ -67,5 +69,5 @@ The server reads these environment variables. `deploy.sh` sets them for you.
 |---|---|
 | `LEAGUE_ID` | Your ESPN league ID (required) |
 | `ESPN_S2`, `SWID` | Your ESPN login cookies (needed for private leagues) |
-| `MCP_SECRET` | Random text that forms part of the connector URL (required, at least 20 characters) |
-| `ESPN_YEAR` | Season to read. Defaults to the current season, which starts each August |
+| `MCP_SECRET` | Random text in the connector URL: at least 20 letters, digits, dashes or underscores (required) |
+| `ESPN_YEAR` | Season to read, 2019 or later. Defaults to the current season, which starts each August. Set it to last season if your league hasn't renewed yet |

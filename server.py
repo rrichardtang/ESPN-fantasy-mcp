@@ -1,5 +1,6 @@
 """Read-only MCP server for one ESPN fantasy football league, served over HTTP."""
 
+import copy
 import difflib
 import functools
 import inspect
@@ -8,7 +9,7 @@ import os
 import re
 import time
 from datetime import date, datetime
-from typing import Literal
+from typing import Annotated, Literal
 
 import requests
 import uvicorn
@@ -17,12 +18,14 @@ from espn_api.requests.espn_requests import ESPNAccessDenied, ESPNInvalidLeague,
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
+from pydantic import Field
 
 LEAGUE_ID = int(os.environ["LEAGUE_ID"])
 ESPN_S2 = os.environ.get("ESPN_S2")
 SWID = os.environ.get("SWID")
+_today = date.today()
 # ESPN names a season after the year it starts, and drafts happen in August.
-YEAR = int(os.environ.get("ESPN_YEAR") or (date.today().year if date.today().month >= 8 else date.today().year - 1))
+YEAR = int(os.environ.get("ESPN_YEAR") or (_today.year if _today.month >= 8 else _today.year - 1))
 
 ESPN_ERRORS = (ESPNAccessDenied, ESPNInvalidLeague, ESPNUnknownError, requests.RequestException)
 
@@ -140,7 +143,9 @@ def get_league_info() -> dict:
         "keepers": s.keeper_count,
         "divisions": list(s.division_map.values()),
         "roster_slots": {slot: count for slot, count in s.position_slot_counts.items() if count},
-        "scoring": {item["label"]: item["points"] for item in s.scoring_format if item["label"] != "Unknown"},
+        "scoring": [
+            {"stat": item["label"], "points": item["points"]} for item in s.scoring_format if item["label"] != "Unknown"
+        ],
     }
 
 
@@ -168,9 +173,9 @@ def get_standings() -> dict:
 
 @tool
 def get_team(team_id: int | None = None) -> dict:
-    """One team's roster with season points per player, plus its weekly schedule. Defaults to your team.
+    """One team's roster with season points per player, plus its schedule. Defaults to your team.
 
-    Schedule result is W, L, T, or U (not decided yet).
+    Each schedule entry lists the NFL weeks it covers. Result is W, L, T, or U (not decided yet).
     """
     lg = league()
     t = _team(lg, team_id)
@@ -194,10 +199,15 @@ def get_team(team_id: int | None = None) -> dict:
             }
             for p in t.roster
         ],
-        # ponytail: week = position in ESPN's list; a playoff bye can shift later playoff weeks by one.
+        # ESPN lists the team once per matchup period, and a playoff matchup can span two NFL weeks.
         "schedule": [
-            {"week": week, "opponent": "BYE" if opp is t else opp.team_name, "score": score, "result": result}
-            for week, (opp, score, result) in enumerate(zip(t.schedule, t.scores, t.outcomes), start=1)
+            {
+                "weeks": lg.settings.matchup_periods.get(str(period), [period]),
+                "opponent": "BYE" if opp is t else opp.team_name,
+                "score": score,
+                "result": result,
+            }
+            for period, (opp, score, result) in enumerate(zip(t.schedule, t.scores, t.outcomes), start=1)
         ],
     }
 
@@ -239,7 +249,7 @@ def get_matchup(team_id: int | None = None, week: int | None = None) -> dict:
 def get_free_agents(
     position: Literal["QB", "RB", "WR", "TE", "FLEX", "D/ST", "K"] | None = None,
     week: int | None = None,
-    limit: int = 25,
+    limit: Annotated[int, Field(ge=1, le=100)] = 25,
 ) -> dict:
     """Best available free agents and waiver players, most rostered first, with points and projections for a week."""
     lg = league()
@@ -260,7 +270,7 @@ def get_free_agents(
                 "opponent": p.pro_opponent,
                 "bye": p.on_bye_week,
             }
-            for p in lg.free_agents(week=week, size=min(limit, 100), position=position)
+            for p in lg.free_agents(week=week, size=limit, position=position)
         ],
     }
 
@@ -301,8 +311,11 @@ def get_player(name: str) -> dict:
 
 
 @tool
-def get_recent_activity(limit: int = 15) -> list:
+def get_recent_activity(limit: Annotated[int, Field(ge=1, le=50)] = 15) -> list:
     """Recent league moves, newest first: free agent adds, waiver claims with FAAB bids, drops and trades."""
+    # espn-api asks ESPN for two more pages per dropped player; look names up locally instead.
+    lg = copy.copy(league())
+    lg.player_info = lambda playerId: lg.player_map.get(playerId)
     return [
         {
             "date": _date(activity.date),
@@ -316,7 +329,7 @@ def get_recent_activity(limit: int = 15) -> list:
                 for team, action, player, bid in activity.actions
             ],
         }
-        for activity in league().recent_activity(size=min(limit, 50))
+        for activity in lg.recent_activity(size=limit)
     ]
 
 

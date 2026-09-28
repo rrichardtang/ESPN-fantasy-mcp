@@ -49,7 +49,10 @@ ROUTES = {
     "kona_player_info": "league_free_agents_2018.json",
     "kona_league_communication": "league_recent_activity_2019.json",
     "kona_playercard": "league_2019_playerCard.json",
-    "mPositionalRatings": {},
+    # How running backs (2) rank against Houston (34), KC's week 16 opponent in the sample NFL schedule.
+    "mPositionalRatings": {
+        "positionAgainstOpponent": {"positionalRatings": {"2": {"ratingsByOpponent": {"34": {"rank": 7}}}}}
+    },
     "mMatchupScore,mScoreboard": {
         "schedule": [
             {
@@ -75,14 +78,19 @@ def sample(name):
     path = Path(tempfile.gettempdir()) / "espn-api-samples" / name
     if not path.exists():
         path.parent.mkdir(exist_ok=True)
-        urllib.request.urlretrieve(SAMPLES + name, path)
+        partial = path.with_suffix(".part")
+        urllib.request.urlretrieve(SAMPLES + name, partial)
+        partial.replace(path)  # so a cut-off download is never mistaken for a finished one
     return json.loads(path.read_text())
 
 
+REQUESTS = []  # (ESPN view, x-fantasy-filter header) for every request the server makes
+
+
 def fake_espn(url, params=None, headers=None, cookies=None):
-    view = params["view"]
-    route = ROUTES[view if isinstance(view, str) else ",".join(view)]
-    data = sample(route) if isinstance(route, str) else route
+    view = params["view"] if isinstance(params["view"], str) else ",".join(params["view"])
+    REQUESTS.append((view, json.loads(headers["x-fantasy-filter"]) if headers else None))
+    data = sample(ROUTES[view]) if isinstance(ROUTES[view], str) else ROUTES[view]
     return SimpleNamespace(status_code=200, json=lambda: data)
 
 
@@ -92,28 +100,33 @@ mock.patch("requests.get", fake_espn).start()
 def test_tools_read_the_sample_league():
     info = server.get_league_info()
     assert (info["name"], info["current_week"], info["your_team_id"]) == ("FXBG League", 16, 1)
-    assert info["roster_slots"]["QB"] == 1
+    assert info["roster_slots"]["QB"] == 1 and {"stat": "TD Rush", "points": 6.0} in info["scoring"]
 
     standings = server.get_standings()
     assert len(standings["teams"]) == 10 and standings["teams"][0]["rank"] == 1
 
     team = server.get_team()
     assert team["team_id"] == 1 and any(p["season_points"] > 0 for p in team["roster"])
-    assert team["schedule"][0]["week"] == 1 and team["schedule"][0]["result"] in "WLT"
+    assert team["schedule"][0]["weeks"] == [1] and team["schedule"][0]["result"] in "WLT"
 
     matchup = server.get_matchup()
     assert (matchup["team"]["team_id"], matchup["opponent"]["team_id"]) == (1, 2)
     assert matchup["team"]["score"] == 101.5 and matchup["team"]["projected"] == 18.0  # bench doesn't count
     assert [p["slot"] for p in matchup["team"]["players"]] == ["RB", "BE"]
+    assert matchup["team"]["players"][0]["opponent"] == "HOU"
     assert server.get_matchup(team_id=2)["team"]["name"] == matchup["opponent"]["name"]
 
     assert server.get_scoreboard()["matchups"][0]["away"]["score"] == 88.25
-    assert server.get_free_agents(position="QB")["players"]
+    assert server.get_free_agents(position="QB", limit=3)["players"]
+    sent = next(filters for view, filters in reversed(REQUESTS) if view == "kona_player_info")["players"]
+    assert (sent["filterSlotIds"]["value"], sent["limit"]) == ([0], 3)  # QB is slot 0
 
     player = server.get_player("james conor")  # close spellings work
     assert player["name"] == "James Conner" and player["weeks"][0]["points"] == 10.5
 
+    before = len(REQUESTS)
     assert server.get_recent_activity()[0]["actions"][0]["team"] == "Perscription Mixon"
+    assert "kona_playercard" not in [view for view, _ in REQUESTS[before:]]  # names come from the player list
 
 
 def test_tools_explain_bad_requests():
@@ -148,16 +161,19 @@ def test_http_endpoint_only_answers_on_the_secret_path():
             tools = (await client.list_tools()).tools
             standings = await client.call_tool("get_standings", {})
             bad = await client.call_tool("get_team", {"team_id": 99})
-            return tools, standings, bad
+            with mock.patch("requests.get", return_value=SimpleNamespace(status_code=401)):
+                denied = await client.call_tool("get_free_agents", {})
+            return tools, standings, bad, denied
 
     try:
         assert httpx2.post(f"{base}/mcp", json={}).status_code == 404
         assert httpx2.post(f"{base}/wrong-secret-0123456789/mcp", json={}).status_code == 404
         for mode in ("legacy", "auto"):  # older clients and the 2026 protocol
-            tools, standings, bad = anyio.run(talk, mode)
+            tools, standings, bad, denied = anyio.run(talk, mode)
             assert len(tools) == 8 and all(t.annotations.read_only_hint for t in tools)
             assert len(json.loads(standings.content[0].text)["teams"]) == 10
             assert bad.is_error and "get_standings" in bad.content[0].text
+            assert denied.is_error and "ESPN request failed" in denied.content[0].text
     finally:
         http.should_exit = True
         thread.join()
