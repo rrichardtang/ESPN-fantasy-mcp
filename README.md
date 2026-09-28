@@ -42,7 +42,8 @@ Your project needs billing turned on. The free trial counts.
    ./deploy.sh
    ```
 3. Enter the league ID and cookies when asked. If Google asks a yes/no question, answer `y`.
-   The first deploy takes a few minutes.
+   The first deploy takes a few minutes. If it stops with an error, wait a minute and run
+   `./deploy.sh` again. Nothing is lost.
 4. Copy the connector URL it prints at the end. Keep it private: anyone with it can read your league.
 
 ### 3. Connect Claude

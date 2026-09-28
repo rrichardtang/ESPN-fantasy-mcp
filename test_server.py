@@ -100,7 +100,7 @@ mock.patch("requests.get", fake_espn).start()
 def test_tools_read_the_sample_league():
     info = server.get_league_info()
     assert (info["name"], info["current_week"], info["your_team_id"]) == ("FXBG League", 16, 1)
-    assert info["roster_slots"]["QB"] == 1 and {"stat": "TD Rush", "points": 6.0} in info["scoring"]
+    assert info["roster_slots"]["QB"] == 1 and {"stat": "TD Rush", "abbr": "RTD", "points": 6.0} in info["scoring"]
 
     standings = server.get_standings()
     assert len(standings["teams"]) == 10 and standings["teams"][0]["rank"] == 1
@@ -108,6 +108,12 @@ def test_tools_read_the_sample_league():
     team = server.get_team()
     assert team["team_id"] == 1 and any(p["season_points"] > 0 for p in team["roster"])
     assert team["schedule"][0]["weeks"] == [1] and team["schedule"][0]["result"] in "WLT"
+    lg = server.league()
+    with (
+        mock.patch.object(server, "league", return_value=lg),
+        mock.patch.dict(lg.settings.matchup_periods, {"16": [16, 17]}),  # a two-week playoff round
+    ):
+        assert server.get_team()["schedule"][-1]["weeks"] == [16, 17]
 
     matchup = server.get_matchup()
     assert (matchup["team"]["team_id"], matchup["opponent"]["team_id"]) == (1, 2)
@@ -125,8 +131,11 @@ def test_tools_read_the_sample_league():
     assert player["name"] == "James Conner" and player["weeks"][0]["points"] == 10.5
 
     before = len(REQUESTS)
-    assert server.get_recent_activity()[0]["actions"][0]["team"] == "Perscription Mixon"
-    assert "kona_playercard" not in [view for view, _ in REQUESTS[before:]]  # names come from the player list
+    activity = server.get_recent_activity()
+    actions = [action for day in activity for action in day["actions"]]
+    assert actions[0]["team"] == "Perscription Mixon" and all(isinstance(a["player"], str) for a in actions)
+    # Only the 7 players missing from the (2018) sample player list need their own ESPN request.
+    assert [view for view, _ in REQUESTS[before:]].count("kona_playercard") == 7
 
 
 def test_tools_explain_bad_requests():

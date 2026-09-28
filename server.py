@@ -144,7 +144,9 @@ def get_league_info() -> dict:
         "divisions": list(s.division_map.values()),
         "roster_slots": {slot: count for slot, count in s.position_slot_counts.items() if count},
         "scoring": [
-            {"stat": item["label"], "points": item["points"]} for item in s.scoring_format if item["label"] != "Unknown"
+            {"stat": item["label"], "abbr": item["abbr"], "points": item["points"]}
+            for item in s.scoring_format
+            if item["label"] != "Unknown"
         ],
     }
 
@@ -313,9 +315,9 @@ def get_player(name: str) -> dict:
 @tool
 def get_recent_activity(limit: Annotated[int, Field(ge=1, le=50)] = 15) -> list:
     """Recent league moves, newest first: free agent adds, waiver claims with FAAB bids, drops and trades."""
-    # espn-api asks ESPN for two more pages per dropped player; look names up locally instead.
+    # espn-api asks ESPN for two more pages per dropped player; try the league's player list first.
     lg = copy.copy(league())
-    lg.player_info = lambda playerId: lg.player_map.get(playerId)
+    lg.player_info = lambda playerId: lg.player_map.get(playerId) or League.player_info(lg, playerId=playerId)
     return [
         {
             "date": _date(activity.date),
