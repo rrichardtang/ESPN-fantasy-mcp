@@ -14,6 +14,7 @@ from typing import Annotated, Literal
 import requests
 import uvicorn
 from espn_api.football import League
+from espn_api.football.player import Player
 from espn_api.requests.espn_requests import ESPNAccessDenied, ESPNInvalidLeague, ESPNUnknownError
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -263,7 +264,7 @@ def get_free_agents(
                 "name": p.name,
                 "position": p.position,
                 "nfl_team": p.proTeam,
-                "injury": p.injuryStatus,
+                "injury": p.injuryStatus or None,  # ESPN leaves it out for D/ST, and espn-api fills in []
                 "owned_pct": p.percent_owned,
                 "projected": p.projected_points,
                 "points": p.points,
@@ -279,21 +280,28 @@ def get_free_agents(
 
 @tool
 def get_player(name: str) -> dict:
-    """Look up any NFL player by name (close spellings work): fantasy team, injury, season totals, and
-    week-by-week points, projections and NFL opponents."""
+    """Look up any NFL player by name (close spellings work): fantasy team, injury, season totals,
+    week-by-week points and NFL opponents, and this week's projection. get_matchup has past projections."""
     lg = league()
     names = {key.lower(): key for key in lg.player_map if isinstance(key, str)}
     match = difflib.get_close_matches(name.lower(), names, n=1, cutoff=0.6)
-    player = lg.player_info(playerId=lg.player_map[names[match[0]]]) if match else None
-    if player is None:
+    if not match:
         raise ToolError(f"No player found matching {name!r}.")
+    # espn-api's player_info leaves out weekly projections. "11<year><week>" asks ESPN for this week's,
+    # the only week it still has on the player card.
+    card = lg.espn_request.get_player_card(
+        [lg.player_map[names[match[0]]]], lg.finalScoringPeriod, [f"11{lg.year}{lg.current_week}"]
+    )
+    if not card["players"]:
+        raise ToolError(f"No player found matching {name!r}.")
+    player = Player(card["players"][0], lg.year, lg._get_all_pro_schedule())
     owner = lg.get_team_data(player.onTeamId)
     weeks = sorted({int(week) for week in player.schedule} | {week for week in player.stats if week})
     return {
         "name": player.name,
         "position": player.position,
         "nfl_team": player.proTeam,
-        "injury": player.injuryStatus,
+        "injury": player.injuryStatus or None,
         "fantasy_team": owner.team_name if owner else "free agent",
         "owned_pct": player.percent_owned,
         "started_pct": player.percent_started,

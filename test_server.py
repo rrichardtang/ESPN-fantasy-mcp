@@ -129,6 +129,8 @@ def test_tools_read_the_sample_league():
 
     player = server.get_player("james conor")  # close spellings work
     assert player["name"] == "James Conner" and player["weeks"][0]["points"] == 10.5
+    sent = next(filters for view, filters in reversed(REQUESTS) if view == "kona_playercard")["players"]
+    assert "11201916" in sent["filterStatsForTopScoringPeriodIds"]["additionalValue"]  # this week's projection
 
     before = len(REQUESTS)
     activity = server.get_recent_activity()
