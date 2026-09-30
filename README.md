@@ -52,6 +52,21 @@ means the current week.
 - **Live during games.** `get_scoreboard` and `get_matchup` show scores as they happen. League data is
   cached for at most one minute.
 
+## Trade finder
+
+`trade_finder.py` lists trades that make your starting lineup better, best first. It runs on your
+computer, not in Claude, with the same `LEAGUE_ID`, `ESPN_S2` and `SWID` settings:
+
+```bash
+python trade_finder.py                        # trades that help both teams
+python trade_finder.py --min-their-gain -10   # also trades that cost the other team up to 10 points
+```
+
+It scores a trade by how much it changes each team's best starting lineup over the rest of the season,
+using ESPN's projections. A bench player you give away costs you nothing, and any team can pick up the
+best free agents, so a player no better than the waiver wire is worth nothing in a trade. It tries
+1-for-1 and 2-for-1 trades in both directions.
+
 ## Setup
 
 You need a Google Cloud project with billing turned on (the free trial counts). Setup takes about 10
