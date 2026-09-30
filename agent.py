@@ -53,7 +53,7 @@ WEB_SEARCH = {
     "max_uses": 8,
     "allowed_domains": [
         "espn.com", "nfl.com", "pro-football-reference.com", "pff.com",
-        "nytimes.com", "rotowire.com", "cbssports.com", "actionnetwork.com",
+        "rotowire.com", "cbssports.com", "actionnetwork.com",
     ],
 }
 PANEL_NOTES = {
