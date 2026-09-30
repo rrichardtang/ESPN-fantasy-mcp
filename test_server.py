@@ -53,6 +53,24 @@ ROUTES = {
     "mPositionalRatings": {
         "positionAgainstOpponent": {"positionalRatings": {"2": {"ratingsByOpponent": {"34": {"rank": 7}}}}}
     },
+    # Kansas City (12) defenders, from the league-less player list get_defense_injuries reads.
+    "/players kona_player_info": [
+        {
+            "fullName": "Hurt Corner",
+            "proTeamId": 12,
+            "defaultPositionId": 12,
+            "injuryStatus": "OUT",
+            "ownership": {"percentOwned": 3.456},
+            "stats": [
+                {"seasonId": 2019, "statSourceId": 0, "statSplitTypeId": 0, "scoringPeriodId": 0,
+                 "stats": {"109": 30.0, "95": 2.0, "210": 2.0}},
+                {"seasonId": 2019, "statSourceId": 0, "statSplitTypeId": 1, "scoringPeriodId": 1, "stats": {"210": 1.0}},
+                {"seasonId": 2019, "statSourceId": 0, "statSplitTypeId": 1, "scoringPeriodId": 2, "stats": {}},
+                {"seasonId": 2018, "statSourceId": 0, "statSplitTypeId": 1, "scoringPeriodId": 3, "stats": {"210": 1.0}},
+            ],
+        },
+        {"fullName": "Healthy Backer", "proTeamId": 12, "defaultPositionId": 11, "injuryStatus": "ACTIVE"},
+    ],
     "mMatchupScore,mScoreboard": {
         "schedule": [
             {
@@ -89,6 +107,8 @@ REQUESTS = []  # (ESPN view, x-fantasy-filter header) for every request the serv
 
 def fake_espn(url, params=None, headers=None, cookies=None):
     view = params["view"] if isinstance(params["view"], str) else ",".join(params["view"])
+    if url.endswith("/players") and f"/players {view}" in ROUTES:  # same view, league-less endpoint
+        view = f"/players {view}"
     REQUESTS.append((view, json.loads(headers["x-fantasy-filter"]) if headers else None))
     data = sample(ROUTES[view]) if isinstance(ROUTES[view], str) else ROUTES[view]
     return SimpleNamespace(status_code=200, json=lambda: data)
@@ -107,6 +127,8 @@ def test_tools_read_the_sample_league():
 
     team = server.get_team()
     assert team["team_id"] == 1 and any(p["season_points"] > 0 for p in team["roster"])
+    byes = {p["nfl_team"]: p["bye_week"] for p in team["roster"]}
+    assert byes["PIT"] == 9 and byes["LAC"] == 5  # from the 2024 sample NFL schedule
     assert team["schedule"][0]["weeks"] == [1] and team["schedule"][0]["result"] in "WLT"
     lg = server.league()
     with (
@@ -120,15 +142,19 @@ def test_tools_read_the_sample_league():
     assert matchup["team"]["score"] == 101.5 and matchup["team"]["projected"] == 18.0  # bench doesn't count
     assert [p["slot"] for p in matchup["team"]["players"]] == ["RB", "BE"]
     assert matchup["team"]["players"][0]["opponent"] == "HOU"
+    assert matchup["team"]["players"][0]["bye_week"] == 6
     assert server.get_matchup(team_id=2)["team"]["name"] == matchup["opponent"]["name"]
 
     assert server.get_scoreboard()["matchups"][0]["away"]["score"] == 88.25
-    assert server.get_free_agents(position="QB", limit=3)["players"]
+    free_agents = server.get_free_agents(position="QB", limit=3)["players"]
+    assert free_agents and any(isinstance(p["bye_week"], int) for p in free_agents)
     sent = next(filters for view, filters in reversed(REQUESTS) if view == "kona_player_info")["players"]
     assert (sent["filterSlotIds"]["value"], sent["limit"]) == ([0], 3)  # QB is slot 0
 
     player = server.get_player("james conor")  # close spellings work
     assert player["name"] == "James Conner" and player["weeks"][0]["points"] == 10.5
+    bye = next(week for week in player["weeks"] if week["week"] == player["bye_week"])
+    assert bye["opponent"] == "BYE" and [w["week"] for w in player["weeks"]] == sorted(w["week"] for w in player["weeks"])
     sent = next(filters for view, filters in reversed(REQUESTS) if view == "kona_playercard")["players"]
     assert "11201916" in sent["filterStatsForTopScoringPeriodIds"]["additionalValue"]  # this week's projection
 
@@ -140,11 +166,29 @@ def test_tools_read_the_sample_league():
     assert [view for view, _ in REQUESTS[before:]].count("kona_playercard") == 7
 
 
+def test_defense_injuries_list_only_hurt_defenders():
+    (kc,) = server.get_defense_injuries(["kc", "KC"])
+    assert (kc["nfl_team"], kc["opponent_this_week"], kc["bye_week"]) == ("KC", "HOU", 6)
+    assert kc["injured"] == [
+        {
+            "name": "Hurt Corner",
+            "position": "CB",
+            "status": "OUT",
+            "owned_pct": 3.46,
+            "weeks_played": [1],
+            "season": {"tackles": 30.0, "sacks": 0, "interceptions": 2.0, "passes_defended": 0},
+        }
+    ]
+    sent = next(filters for view, filters in reversed(REQUESTS) if view == "/players kona_player_info")
+    assert sent["filterProTeamIds"]["value"] == [12]
+
+
 def test_tools_explain_bad_requests():
     for bad_call in (
         lambda: server.get_matchup(week=17),
         lambda: server.get_team(team_id=99),
         lambda: server.get_player("zzzzzzzz"),
+        lambda: server.get_defense_injuries(["XYZ"]),
     ):
         with pytest.raises(ToolError):
             bad_call()
@@ -181,7 +225,7 @@ def test_http_endpoint_only_answers_on_the_secret_path():
         assert httpx2.post(f"{base}/wrong-secret-0123456789/mcp", json={}).status_code == 404
         for mode in ("legacy", "auto"):  # older clients and the 2026 protocol
             tools, standings, bad, denied = anyio.run(talk, mode)
-            assert len(tools) == 8 and all(t.annotations.read_only_hint for t in tools)
+            assert len(tools) == 9 and all(t.annotations.read_only_hint for t in tools)
             assert len(json.loads(standings.content[0].text)["teams"]) == 10
             assert bad.is_error and "get_standings" in bad.content[0].text
             assert denied.is_error and "ESPN request failed" in denied.content[0].text

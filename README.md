@@ -12,7 +12,8 @@ the Claude app. It can only read. It can't set lineups or make moves.
 | `get_scoreboard` | All matchups in a week, with live and projected scores |
 | `get_matchup` | Both lineups in one matchup, player by player |
 | `get_free_agents` | The best available players, by position |
-| `get_player` | Any NFL player, week by week |
+| `get_player` | Any NFL player, week by week, with their bye week |
+| `get_defense_injuries` | Injured defenders on any NFL team, with their season stats |
 | `get_recent_activity` | Adds, drops, waiver claims and trades |
 
 ## Set it up (once)
