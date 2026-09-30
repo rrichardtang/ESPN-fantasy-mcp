@@ -41,6 +41,11 @@ class Trade:
     their_gain: float
 
 
+def starting(slots: dict[str, int]) -> dict[str, int]:
+    """The slots that hold a starter."""
+    return {s: n for s, n in slots.items() if n and s not in NOT_STARTING}
+
+
 def lineup_points(players, slots: dict[str, int]) -> float:
     """Projected points of the best starting lineup. Filling narrow slots before wide ones is optimal when any
     two slots' positions are nested or disjoint. Only RB/WR and WR/TE overlap otherwise, so with both, each
@@ -92,7 +97,7 @@ def find_trades(
     least as good for both teams, so a throw-in player only shows up if it helps the other team.
 
     others pairs each other team's name with its roster. sizes lists (players you give, players you get)."""
-    slots = {s: n for s, n in slots.items() if n and s not in NOT_STARTING}
+    slots = starting(slots)
     waiver = replacement(free_agents)
 
     def value(roster):
@@ -124,7 +129,7 @@ def find_trades(
     return sorted(trades, key=lambda t: (-t.my_gain, -t.their_gain))
 
 
-def _players(espn_players) -> list[Player]:
+def projected_players(espn_players) -> list[Player]:
     return [Player(p.name, p.position, p.projected_total_points or 0.0) for p in espn_players]
 
 
@@ -140,10 +145,10 @@ def main():
 
     lg = server.league()
     me = server._team(lg, None)
-    free_agents = _players(lg.free_agents(size=200))
-    others = [(t.team_name, _players(t.roster)) for t in lg.teams if t is not me]
+    free_agents = projected_players(lg.free_agents(size=200))
+    others = [(t.team_name, projected_players(t.roster)) for t in lg.teams if t is not me]
     trades = find_trades(
-        _players(me.roster), others, free_agents, lg.settings.position_slot_counts, args.min_their_gain
+        projected_players(me.roster), others, free_agents, lg.settings.position_slot_counts, args.min_their_gain
     )
 
     names = lambda players: " + ".join(p.name for p in players)  # noqa: E731

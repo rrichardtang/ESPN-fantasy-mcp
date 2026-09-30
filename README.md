@@ -67,6 +67,22 @@ using ESPN's projections. A bench player you give away costs you nothing, and an
 best free agents, so a player no better than the waiver wire is worth nothing in a trade. It tries
 1-for-1 and 2-for-1 trades in both directions.
 
+## Waiver finder
+
+`waiver_finder.py` lists free agents worth picking up, best first, in two tables: for the rest of the
+season and for this week. Same `LEAGUE_ID`, `ESPN_S2` and `SWID` settings:
+
+```bash
+python waiver_finder.py            # top 10 pickups in each table
+python waiver_finder.py --top 5
+```
+
+It scores a pickup by how much it changes your best starting lineup, using ESPN's projections. Each free
+agent is shown with the best player to drop for them, or nobody if you have an open roster spot. A bench
+player you drop costs nothing. The this-week table also shows what the move does to your rest-of-season
+points, which can be negative when you pick up someone only to fill in for a week. A player on a bye
+counts as 0 points that week.
+
 ## Setup
 
 You need a Google Cloud project with billing turned on (the free trial counts). Setup takes about 10
