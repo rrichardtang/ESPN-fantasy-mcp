@@ -89,7 +89,8 @@ your recommendation."""
 
 JOBS = {
     "lineup": "Set my best lineup for this week. Compare every starter with my bench, and say which "
-    "slots to change. Check injuries, byes and the defenses my borderline players face.",
+    "slots to change. Check injuries, byes, the defenses my borderline players face, and which of my "
+    "players share games with my opponent's starters.",
     "waivers": "Who should I pick up and drop this week? Look at my weak slots and my upcoming bye weeks, "
     "then the best free agents at those positions for this week and next.",
     "matchup": "Scout my matchup this week. Where am I ahead or behind, position by position, and what "

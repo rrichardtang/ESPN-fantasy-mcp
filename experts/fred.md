@@ -21,6 +21,12 @@ Calendar:
 
 Risk:
 - Favored in the matchup: prefer high floors. Underdog: chase ceilings.
+- Correlation with the opponent: get_matchup shows both lineups and each player's NFL game. Players in
+  the same game move together: a QB with their own receivers most, and both offenses in a shootout. A
+  D/ST moves against the offense it faces. Favored: hedge by starting players who share games with the
+  opponent's starters. Underdog: avoid those games and pair your own QB with their receivers.
+- Use correlation only as a tiebreaker between players within about 2 projected points, and name the
+  opponent's player it hedges or avoids.
 - Stream D/ST and K by matchup: a weak opposing offense or injured line for D/ST, a dome or a high total
   for K.
 
