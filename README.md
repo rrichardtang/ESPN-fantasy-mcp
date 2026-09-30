@@ -1,75 +1,116 @@
-# ESPN-fantasy-mcp
+# ESPN Fantasy MCP
 
-Lets Claude read your ESPN fantasy football league. It runs on Google Cloud Run, and you add it to
-Claude once as a custom connector. After that it works in Claude Code cloud sessions, claude.ai and
-the Claude app. It can only read. It can't set lineups or make moves.
+An [MCP](https://modelcontextprotocol.io) server that gives Claude live, read-only access to one ESPN
+fantasy football league: rosters, matchups, free agents, NFL injuries and bye weeks. Ask Claude who to
+start, who to pick up or how your matchup is going, and it answers from your league's real data instead
+of guessing.
 
-| Tool | What it answers |
-|---|---|
-| `get_league_info` | Scoring rules, roster slots, playoff format, trade deadline, FAAB budget |
-| `get_standings` | Every team's record, points and streak |
-| `get_team` | A roster with season points, plus the weekly schedule |
-| `get_scoreboard` | All matchups in a week, with live and projected scores |
-| `get_matchup` | Both lineups in one matchup, player by player |
-| `get_free_agents` | The best available players, by position |
-| `get_player` | Any NFL player, week by week, with their bye week |
-| `get_defense_injuries` | Injured defenders on any NFL team, with their season stats |
-| `get_recent_activity` | Adds, drops, waiver claims and trades |
+It runs on Google Cloud Run, and you add it to Claude once as a custom connector. After that it works
+in claude.ai, the Claude apps and Claude Code.
 
-## Set it up (once)
+> [!IMPORTANT]
+> Your connector URL and ESPN cookies work like a password. Anyone with the URL can read your league.
+> Keep both out of chats, screenshots and git.
 
-You need a computer for step 1. Everything else works in a browser.
+## What you can ask
 
-### 1. Get your league ID and ESPN cookies
+- "Who should I start at flex this week? Check injuries and byes."
+- "Which free agent running back should I pick up for week 6?"
+- "My D/ST plays Carolina. How banged up is their secondary?"
+- "How am I doing against Gibble right now, player by player?"
+- "Who in my league is thin at QB and might trade for one of mine?"
 
-1. In Chrome, log in at https://fantasy.espn.com and open your league.
-2. Copy the number after `leagueId=` in the address bar. That's your league ID.
-3. Press F12 (Mac: Cmd+Option+I), open the **Application** tab, then **Cookies** > `https://fantasy.espn.com`.
-4. Copy the values of `espn_s2` and `SWID`. SWID looks like `{1A2B3C4D-...}`. Keep the braces.
+## Tools
 
-The two cookies work like your ESPN password. Don't paste them into chats or commit them to GitHub.
-Public leagues don't need them, but `SWID` lets the tools know which team is yours.
+Every tool is read-only and returns JSON. `team_id` defaults to your own team, and an empty `week`
+means the current week.
 
-### 2. Deploy to Google Cloud
+| Tool | What it answers | Parameters |
+|---|---|---|
+| `get_league_info` | Scoring rules, roster slots, playoff format, trade deadline, FAAB budget | none |
+| `get_standings` | Every team's id, record, points for and against, and streak | none |
+| `get_team` | A roster with season points and bye weeks, plus the full schedule | `team_id` |
+| `get_scoreboard` | Every matchup in a week, with live and projected scores | `week` |
+| `get_matchup` | Both lineups in one matchup, player by player: points, projection, opponent, bye | `team_id`, `week` |
+| `get_free_agents` | The best available players, most rostered first, with projections and bye weeks | `position`, `week`, `limit` (1-100, default 25) |
+| `get_player` | Any NFL player, week by week: points, opponents, injury, bye week, owner | `name` (close spellings work) |
+| `get_defense_injuries` | Injured defensive players on up to 8 NFL teams, with their season stats | `nfl_teams`, such as `["CAR", "NYG"]` |
+| `get_recent_activity` | Adds, drops, waiver claims with bids, and trades, newest first | `limit` (1-50, default 15) |
 
-Your project needs billing turned on. The free trial counts.
+### Why they help
 
-1. Open https://console.cloud.google.com with your project selected, then click the **>_** button
-   (Activate Cloud Shell) at the top right.
-2. Paste:
-   ```
-   git clone https://github.com/rrichardtang/ESPN-fantasy-mcp
-   cd ESPN-fantasy-mcp
-   ./deploy.sh
-   ```
-3. Enter the league ID and cookies when asked. If Google asks a yes/no question, answer `y`.
-   The first deploy takes a few minutes. If it stops with an error, wait a minute and run
-   `./deploy.sh` again. Nothing is lost.
-4. Copy the connector URL it prints at the end. Keep it private: anyone with it can read your league.
+- **Bye weeks are built in.** Every player comes with a `bye_week`, and a bye shows as `BYE` in place
+  of an opponent. The server tells Claude never to suggest starting or adding a player for their bye
+  week.
+- **Defense injuries show matchups.** Your league rosters whole team defenses, so the other tools never
+  mention individual defenders. `get_defense_injuries` adds the injured cornerbacks, linemen and
+  linebackers behind a D/ST. That helps
+  you judge your own defense and the defense your receivers face. Season tackles, sacks and weeks
+  played show whether the injured player is a starter or a backup.
+- **Your league's rules, not generic rankings.** Projections, points and roster slots come from your
+  league's own scoring settings. A 2-QB or half-PPR league gets advice that fits it.
+- **Live during games.** `get_scoreboard` and `get_matchup` show scores as they happen. League data is
+  cached for at most one minute.
 
-### 3. Connect Claude
+## Setup
 
-1. Go to https://claude.ai/customize/connectors and add a custom connector named `ESPN Fantasy`,
-   using the connector URL.
-2. Start a new Claude Code session. Connectors load when a session starts.
+You need a Google Cloud project with billing turned on (the free trial counts). Setup takes about 10
+minutes.
 
-## Later
+**1. Get your league ID and cookies.** Open your league at https://fantasy.espn.com in Chrome. The
+league ID is the number after `leagueId=` in the address bar. Then press F12, open **Application** >
+**Cookies** > `https://fantasy.espn.com`, and copy `espn_s2` and `SWID` (keep SWID's braces). Public
+leagues can skip `espn_s2`, but `SWID` tells the tools which team is yours.
 
-- **New code:** in Cloud Shell, run `cd ESPN-fantasy-mcp && git pull && ./deploy.sh`. It keeps your
-  settings and the connector URL stays the same.
-- **Claude says your league "cannot be accessed with the provided credentials":** your cookies
-  expired. Get fresh ones (step 1), then in the Cloud Console open Cloud Run > `espn-fantasy-mcp` >
-  **Edit & deploy new revision** > **Variables & Secrets**, and replace `ESPN_S2` and `SWID`.
-- **Run the tests:** `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt pytest && .venv/bin/pytest`.
-  The first run downloads sample ESPN data from the [espn-api](https://github.com/cwendt94/espn-api) project.
+**2. Deploy.** Open https://console.cloud.google.com, click **Activate Cloud Shell** (the `>_` button,
+top right), and run:
 
-## Settings
+```bash
+git clone https://github.com/rrichardtang/ESPN-fantasy-mcp
+cd ESPN-fantasy-mcp
+./deploy.sh
+```
 
-The server reads these environment variables. `deploy.sh` sets them for you.
+Enter the league ID and cookies when asked, and answer `y` to any yes/no questions. The script prints
+your connector URL at the end. If it stops with an error, run `./deploy.sh` again. Nothing is lost.
+
+**3. Connect Claude.** At https://claude.ai/customize/connectors, add a custom connector named
+`ESPN Fantasy` with the connector URL. Start a new chat or session so the tools load.
+
+<details>
+<summary><b>Configuration</b></summary>
+
+`deploy.sh` sets these environment variables on the first run.
 
 | Variable | Meaning |
 |---|---|
 | `LEAGUE_ID` | Your ESPN league ID (required) |
 | `ESPN_S2`, `SWID` | Your ESPN login cookies (needed for private leagues) |
 | `MCP_SECRET` | Random text in the connector URL: at least 20 letters, digits, dashes or underscores (required) |
-| `ESPN_YEAR` | Season to read, 2019 or later. Defaults to the current season, which starts each August. Set it to last season if your league hasn't renewed yet |
+| `ESPN_YEAR` | Season to read, 2019 or later. Defaults to the current season, which starts each August |
+
+</details>
+
+<details>
+<summary><b>Updating and troubleshooting</b></summary>
+
+- **Get new code:** in Cloud Shell, run `cd ESPN-fantasy-mcp && git pull && ./deploy.sh`. Your
+  settings and connector URL stay the same.
+- **"Cannot be accessed with the provided credentials":** your cookies expired. Get fresh ones (step
+  1), then in the Cloud Console open **Cloud Run** > `espn-fantasy-mcp` > **Edit & deploy new
+  revision** > **Variables & Secrets**, and replace `ESPN_S2` and `SWID`.
+- **New tools don't show up:** start a new chat. Claude loads connectors when a chat starts.
+
+</details>
+
+<details>
+<summary><b>Development</b></summary>
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt pytest && .venv/bin/pytest
+```
+
+The tests run every tool against sample ESPN data from the
+[espn-api](https://github.com/cwendt94/espn-api) project, which the first run downloads.
+
+</details>
