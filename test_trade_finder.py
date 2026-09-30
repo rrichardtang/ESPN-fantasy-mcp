@@ -23,7 +23,7 @@ def test_two_for_one_consolidation_can_help_both_teams():
             Player("Rx", "RB", 60)]
     free_agents = [Player("FA-RB", "RB", 80), Player("FA-WR", "WR", 80)]
 
-    best = find_trades(me, {"Them": them}, free_agents, SLOTS)[0]
+    best = find_trades(me, [("Them", them)], free_agents, SLOTS)[0]
 
     assert (best.give, best.get) == ((Player("R2", "RB", 190), Player("R3", "RB", 180)), (Player("Star", "WR", 250),))
     # Me: Star takes the WR slot and W moves to flex in place of R2: 840 - 780.
@@ -35,13 +35,33 @@ def test_two_for_one_consolidation_can_help_both_teams():
 def test_both_teams_must_gain_unless_told_otherwise():
     me = [Player("Q", "QB", 300), Player("R", "RB", 100), Player("W", "WR", 100), Player("W2", "WR", 90)]
     them = [Player("Q2", "QB", 300), Player("R2", "RB", 200), Player("W3", "WR", 200), Player("W4", "WR", 190)]
-    assert all(t.their_gain > 0 for t in find_trades(me, {"Them": them}, [], SLOTS))
-    assert any(t.their_gain < 0 for t in find_trades(me, {"Them": them}, [], SLOTS, min_their_gain=-1000))
+    assert all(t.their_gain > 0 for t in find_trades(me, [("Them", them)], [], SLOTS))
+    assert any(t.their_gain < 0 for t in find_trades(me, [("Them", them)], [], SLOTS, min_their_gain=-1000))
 
 
 def test_throw_ins_that_change_nothing_are_left_out():
     me = [Player("Q", "QB", 300), Player("R1", "RB", 200), Player("R2", "RB", 190), Player("R3", "RB", 180),
           Player("W", "WR", 90), Player("Junk", "TE", 50)]
     them = [Player("Q2", "QB", 290), Player("Star", "WR", 250), Player("W2", "WR", 140), Player("Rx", "RB", 95)]
-    trades = find_trades(me, {"Them": them}, [], SLOTS, min_their_gain=-1000)
+    trades = find_trades(me, [("Them", them)], [], SLOTS, min_their_gain=-1000)
     assert not any(Player("Junk", "TE", 50) in t.give and len(t.give) == 2 for t in trades)
+
+
+def test_rb_wr_and_wr_te_flex_slots_share_wide_receivers_correctly():
+    roster = [Player("W", "WR", 100), Player("R", "RB", 90), Player("T", "TE", 10)]
+    assert lineup_points(roster, {"RB/WR": 1, "WR/TE": 1}) == 190
+    assert lineup_points(roster, {"WR/TE": 1, "RB/WR": 1}) == 190
+
+
+def test_defensive_group_slots_take_their_positions():
+    roster = [Player("E", "DE", 50), Player("T", "DT", 40), Player("C", "CB", 30), Player("L", "LB", 20)]
+    assert lineup_points(roster, {"DL": 1, "DP": 1}) == 50 + 40
+    assert lineup_points(roster, {"DB": 1, "DP": 1}) == 30 + 50
+
+
+def test_teams_with_the_same_name_are_both_searched():
+    me = [Player("Q", "QB", 300), Player("R", "RB", 100), Player("W", "WR", 100), Player("W2", "WR", 90)]
+    a = [Player("Q2", "QB", 300), Player("R2", "RB", 200), Player("W3", "WR", 200), Player("W4", "WR", 190)]
+    b = [Player("Q3", "QB", 300), Player("R3", "RB", 210), Player("W5", "WR", 205), Player("W6", "WR", 195)]
+    trades = find_trades(me, [("Same", a), ("Same", b)], [], SLOTS, min_their_gain=-1000)
+    assert any(set(t.get) <= set(a) for t in trades) and any(set(t.get) <= set(b) for t in trades)

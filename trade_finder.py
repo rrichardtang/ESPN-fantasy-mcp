@@ -12,7 +12,15 @@ from dataclasses import dataclass
 from itertools import combinations
 
 # Flex slots and the positions they accept. Any other slot takes only its own position.
-FLEX = {"RB/WR": {"RB", "WR"}, "WR/TE": {"WR", "TE"}, "RB/WR/TE": {"RB", "WR", "TE"}, "OP": {"QB", "RB", "WR", "TE"}}
+FLEX = {
+    "RB/WR": {"RB", "WR"},
+    "WR/TE": {"WR", "TE"},
+    "RB/WR/TE": {"RB", "WR", "TE"},
+    "OP": {"QB", "RB", "WR", "TE"},
+    "DL": {"DT", "DE"},
+    "DB": {"CB", "S"},
+    "DP": {"DT", "DE", "LB", "CB", "S"},
+}
 NOT_STARTING = {"BE", "IR", ""}
 FREE_AGENTS_PER_POSITION = 3
 
@@ -34,8 +42,16 @@ class Trade:
 
 
 def lineup_points(players, slots: dict[str, int]) -> float:
-    """Projected points of the best starting lineup. Filling narrow slots before flex slots is optimal
-    because each flex slot accepts every position of the slots filled before it."""
+    """Projected points of the best starting lineup. Filling narrow slots before wide ones is optimal when any
+    two slots' positions are nested or disjoint. Only RB/WR and WR/TE overlap otherwise, so with both, each
+    WR/TE slot is tried as a WR slot and as a TE slot, which covers every way the optimal lineup can fill it."""
+    if slots.get("RB/WR") and slots.get("WR/TE"):
+        rest = {s: n for s, n in slots.items() if s != "WR/TE"}
+        n = slots["WR/TE"]
+        return max(
+            lineup_points(players, {**rest, "TE": rest.get("TE", 0) + k, "WR": rest.get("WR", 0) + n - k})
+            for k in range(n + 1)
+        )
     pool = sorted(players, key=lambda p: p.points, reverse=True)
     total = 0.0
     for slot, count in sorted(slots.items(), key=lambda s: len(FLEX.get(s[0], {s[0]}))):
@@ -64,13 +80,18 @@ def tradeable(roster, waiver: list[Player]) -> list[Player]:
 
 
 def find_trades(
-    my_roster, others: dict[str, list[Player]], free_agents, slots, min_their_gain=0.0, sizes=((1, 1), (2, 1), (1, 2))
+    my_roster,
+    others: list[tuple[str, list[Player]]],
+    free_agents,
+    slots,
+    min_their_gain=0.0,
+    sizes=((1, 1), (2, 1), (1, 2)),
 ):
     """Every 1-for-1 and 2-for-1 trade (in both directions) that improves your lineup and changes theirs by
     more than min_their_gain, best for you first. A trade is left out when a smaller one inside it is at
     least as good for both teams, so a throw-in player only shows up if it helps the other team.
 
-    others maps each other team's name to its roster. sizes lists (players you give, players you get)."""
+    others pairs each other team's name with its roster. sizes lists (players you give, players you get)."""
     slots = {s: n for s, n in slots.items() if n and s not in NOT_STARTING}
     waiver = replacement(free_agents)
 
@@ -80,7 +101,7 @@ def find_trades(
     mine = tradeable(my_roster, waiver)
     my_before = value(my_roster)
     found = {}
-    for partner, roster in others.items():
+    for partner, roster in others:
         theirs = tradeable(roster, waiver)
         their_before = value(roster)
         for n_give, n_get in sizes:
@@ -120,7 +141,7 @@ def main():
     lg = server.league()
     me = server._team(lg, None)
     free_agents = _players(lg.free_agents(size=200))
-    others = {t.team_name: _players(t.roster) for t in lg.teams if t is not me}
+    others = [(t.team_name, _players(t.roster)) for t in lg.teams if t is not me]
     trades = find_trades(
         _players(me.roster), others, free_agents, lg.settings.position_slot_counts, args.min_their_gain
     )
