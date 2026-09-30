@@ -64,9 +64,12 @@ ROUTES = {
             "stats": [
                 {"seasonId": 2019, "statSourceId": 0, "statSplitTypeId": 0, "scoringPeriodId": 0,
                  "stats": {"109": 30.0, "95": 2.0, "210": 2.0}},
-                {"seasonId": 2019, "statSourceId": 0, "statSplitTypeId": 1, "scoringPeriodId": 1, "stats": {"210": 1.0}},
+                # Stat 210 means the player played that week. Week 3 is last season's.
+                {"seasonId": 2019, "statSourceId": 0, "statSplitTypeId": 1, "scoringPeriodId": 1,
+                 "stats": {"210": 1.0}},
                 {"seasonId": 2019, "statSourceId": 0, "statSplitTypeId": 1, "scoringPeriodId": 2, "stats": {}},
-                {"seasonId": 2018, "statSourceId": 0, "statSplitTypeId": 1, "scoringPeriodId": 3, "stats": {"210": 1.0}},
+                {"seasonId": 2018, "statSourceId": 0, "statSplitTypeId": 1, "scoringPeriodId": 3,
+                 "stats": {"210": 1.0}},
             ],
         },
         {"fullName": "Healthy Backer", "proTeamId": 12, "defaultPositionId": 11, "injuryStatus": "ACTIVE"},
@@ -154,7 +157,8 @@ def test_tools_read_the_sample_league():
     player = server.get_player("james conor")  # close spellings work
     assert player["name"] == "James Conner" and player["weeks"][0]["points"] == 10.5
     bye = next(week for week in player["weeks"] if week["week"] == player["bye_week"])
-    assert bye["opponent"] == "BYE" and [w["week"] for w in player["weeks"]] == sorted(w["week"] for w in player["weeks"])
+    weeks = [week["week"] for week in player["weeks"]]
+    assert bye["opponent"] == "BYE" and weeks == sorted(weeks)
     sent = next(filters for view, filters in reversed(REQUESTS) if view == "kona_playercard")["players"]
     assert "11201916" in sent["filterStatsForTopScoringPeriodIds"]["additionalValue"]  # this week's projection
 

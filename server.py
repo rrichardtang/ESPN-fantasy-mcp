@@ -388,15 +388,14 @@ def get_defense_injuries(nfl_teams: Annotated[list[str], Field(min_length=1, max
             continue
         actual = [s for s in p.get("stats", []) if s.get("seasonId") == lg.year and s.get("statSourceId") == 0]
         totals = next((s.get("stats", {}) for s in actual if s.get("statSplitTypeId") == 0), {})
+        weekly = [s for s in actual if s.get("statSplitTypeId") == 1]
         teams[p["proTeamId"]]["injured"].append(
             {
                 "name": p["fullName"],
                 "position": DEFENSE_POSITIONS.get(p.get("defaultPositionId"), "DEF"),
                 "status": status,
                 "owned_pct": round(p.get("ownership", {}).get("percentOwned", 0), 2),
-                "weeks_played": sorted(
-                    s["scoringPeriodId"] for s in actual if s.get("statSplitTypeId") == 1 and "210" in s.get("stats", {})
-                ),
+                "weeks_played": sorted(s["scoringPeriodId"] for s in weekly if "210" in s.get("stats", {})),
                 "season": {name: totals.get(stat, 0) for name, stat in DEFENSE_STATS.items()},
             }
         )
