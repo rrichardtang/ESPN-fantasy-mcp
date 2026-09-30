@@ -24,7 +24,13 @@ import anthropic
 from anthropic.lib.tools.mcp import async_mcp_tool
 from mcp import Client
 
-MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-5-5")
+MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5-5")
+# Claude Sonnet 5.5's list prices: dollars per million tokens, and per web search.
+PRICES = {"input": 2.00, "output": 10.00, "cache_read": 0.20, "cache_write": 2.50, "search": 0.01}
+# Most one report (every panel call together) may spend, in dollars. Fred and Alan stop at 70% so the judge
+# always gets to answer.
+MAX_SPEND = float(os.environ.get("MAX_SPEND", "1.00"))
+EXPERT_SHARE = 0.7
 
 RULES = """You sit on a panel that advises the manager of one ESPN fantasy football league. You read the \
 league through read-only tools.
@@ -127,14 +133,29 @@ async def brief(mcp: Client) -> str:
     )
 
 
+class Meter:
+    """Adds up what one report costs at list prices."""
+
+    def __init__(self):
+        self.spent = 0.0
+
+    def add(self, usage) -> None:
+        tokens = (usage.input_tokens * PRICES["input"] + usage.output_tokens * PRICES["output"]
+                  + (usage.cache_read_input_tokens or 0) * PRICES["cache_read"]
+                  + (usage.cache_creation_input_tokens or 0) * PRICES["cache_write"])
+        searches = usage.server_tool_use.web_search_requests if usage.server_tool_use else 0
+        self.spent += tokens / 1_000_000 + (searches or 0) * PRICES["search"]
+
+
 def tool_name(tool) -> str:
     return tool["name"] if isinstance(tool, dict) else tool.name
 
 
 class Expert:
     def __init__(self, name: str, system: str, tools: list, client: anthropic.AsyncAnthropic, league_brief: str,
-                 log=sys.stderr):
+                 log=sys.stderr, meter: Meter | None = None, limit: float = MAX_SPEND):
         self.name, self.system, self.tools, self.client, self.log = name, system, tools, client, log
+        self.meter, self.limit = meter or Meter(), limit
         self.messages = []
         self.complete = True
         self.container = None
@@ -169,6 +190,11 @@ class Expert:
                 if block.type in ("tool_use", "server_tool_use"):
                     args = json.dumps(block.input) if block.input else ""
                     print(f"  {self.name} → {block.name}({args})", file=self.log)
+            self.meter.add(message.usage)
+            if self.meter.spent >= self.limit and message.stop_reason == "tool_use":
+                # Out of budget: drop the tool calls that will never be answered so the history stays valid.
+                self.messages.pop()
+                break
             results = await runner.generate_tool_call_response()
             if results:
                 self.messages.append(results)
@@ -179,7 +205,9 @@ class Expert:
         if message.stop_reason == "refusal":
             return "Claude declined to answer that."
         text = "\n".join(block.text for block in message.content if block.type == "text")
-        if not self.complete:
+        if self.meter.spent >= self.limit and not self.complete:
+            text += f"\n\n(Stopped at the ${self.limit:.2f} spending limit before finishing.)"
+        elif not self.complete:
             text += "\n\n(Cut off before finishing. Ask again to let it continue.)"
         return text
 
@@ -196,8 +224,10 @@ class Panel:
         def expert(name, tools):
             notes = QUICK_NOTE if quick and name == "fred" else PANEL_NOTES.get(name, "")
             system = RULES + (EXPERTS / f"{name}.md").read_text() + notes
-            return Expert(name, system, tools, client, league_brief, log)
+            limit = MAX_SPEND if name == "judge" or quick else MAX_SPEND * EXPERT_SHARE
+            return Expert(name, system, tools, client, league_brief, log, self.meter, limit)
 
+        self.meter = Meter()
         self.fred = expert("fred", espn_tools)
         self.alan = expert("alan", [WEB_SEARCH, *(t for t in espn_tools if t.name in ALAN_TOOLS)])
         self.judge = expert("judge", espn_tools)
@@ -245,9 +275,10 @@ async def main(args: list[str]) -> None:
             return
 
         async def answer(question: str) -> str:
-            if quick:
-                return await panel.fred.ask(question)
-            return "## Verdict\n\n" + await panel.ask(question)
+            panel.meter.spent = 0.0
+            text = await panel.fred.ask(question) if quick else "## Verdict\n\n" + await panel.ask(question)
+            print(f"\nCost: ${panel.meter.spent:.2f} (limit ${MAX_SPEND:.2f})", file=sys.stderr)
+            return text
 
         if args:
             print(await answer(JOBS.get(args[0], " ".join(args))))

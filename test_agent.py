@@ -97,6 +97,25 @@ def test_expert_runs_tools_and_keeps_the_conversation():
     assert history[-1]["content"] == "Sure?"
 
 
+def test_expert_stops_at_the_spending_limit():
+    requests = []
+
+    def claude(request):
+        requests.append(json.loads(request.content))
+        return httpx2.Response(200, json=SCRIPT[len(requests) - 1])
+
+    async def run():
+        async with Client(league) as mcp:
+            tools = [async_mcp_tool(t, mcp) for t in (await mcp.list_tools()).tools]
+            # The first reply (1 token in, 1 out) costs $0.000012, over this limit.
+            expert = agent.Expert("fred", "Be Fred.", tools, fake_claude(claude), "", log=io.StringIO(), limit=0.00001)
+            return await expert.ask("Who starts?"), expert
+
+    text, expert = anyio.run(run)
+    assert len(requests) == 1 and "spending limit" in text and not expert.complete
+    assert [m["role"] for m in expert.messages] == ["user"]
+
+
 SEARCH = [
     {"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search", "input": {"query": "Bijan snap share"}},
     {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": [

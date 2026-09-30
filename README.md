@@ -100,7 +100,8 @@ export ANTHROPIC_API_KEY=...  ESPN_MCP_URL=...   # your connector URL
 ```
 
 A panel question usually makes five Claude runs, so expect a minute or more and several times the cost
-of one answer. For quick lookups, `--quick` asks Fred alone.
+of one answer. For quick lookups, `--quick` asks Fred alone. The panel runs on Claude Sonnet 5.5 and stops a
+report at $1.00 (set `MAX_SPEND` to change it); each run prints what it cost.
 
 Without `ESPN_MCP_URL` it runs the server in-process instead, using `LEAGUE_ID`, `ESPN_S2` and `SWID`.
 `agent.py --brief` prints the league brief and each expert's tools, without calling Claude. To tune an
