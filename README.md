@@ -60,12 +60,27 @@ computer, not in Claude, with the same `LEAGUE_ID`, `ESPN_S2` and `SWID` setting
 ```bash
 python trade_finder.py                        # trades that help both teams
 python trade_finder.py --min-their-gain -10   # also trades that cost the other team up to 10 points
+python trade_finder.py --adjustments notes.json   # with your own research, see below
 ```
 
 It scores a trade by how much it changes each team's best starting lineup over the rest of the season,
 using ESPN's projections. A bench player you give away costs you nothing, and any team can pick up the
 best free agents, so a player no better than the waiver wire is worth nothing in a trade. It tries
 1-for-1 and 2-for-1 trades in both directions.
+
+Lineups are built week by week, from each player's projected points per game. A player on a bye is out
+that week, so two starters with the same bye cost you, and a bench player who covers a bye is worth
+something. Playoff weeks count 1.25 times. Above the table you see your lineup's points each week with the
+three weakest marked, and the Worst column shows what a trade does to your lowest week.
+
+`--adjustments` takes a JSON file of your own research:
+
+```json
+{"Christian McCaffrey": {"multiplier": 1.1, "out_through_week": 6, "reason": "...", "source": "..."}}
+```
+
+`multiplier` scales his projection (kept between 0.8 and 1.2) and `out_through_week` keeps him out of the
+lineup through that week. Names that match no player are reported.
 
 ## Waiver finder
 
@@ -75,13 +90,15 @@ season and for this week. Same `LEAGUE_ID`, `ESPN_S2` and `SWID` settings:
 ```bash
 python waiver_finder.py            # top 10 pickups in each table
 python waiver_finder.py --top 5
+python waiver_finder.py --adjustments notes.json   # same file as the trade finder
 ```
 
 It scores a pickup by how much it changes your best starting lineup, using ESPN's projections. Each free
 agent is shown with the best player to drop for them, or nobody if you have an open roster spot. A bench
 player you drop costs nothing. The this-week table also shows what the move does to your rest-of-season
 points, which can be negative when you pick up someone only to fill in for a week. A player on a bye
-counts as 0 points that week.
+counts as 0 points that week. The rest-of-season table builds your lineup week by week like the trade
+finder, so a pickup that covers a bye counts.
 
 ## Setup
 

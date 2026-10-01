@@ -1,0 +1,1 @@
+- ESPN-fantasy-mcp: rounded gains tie often; any argmax over roster needs an explicit tie-break (held value), else falls to index 0.

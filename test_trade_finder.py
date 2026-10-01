@@ -1,6 +1,18 @@
 """Tests the trade finder's lineup math and search on small made-up rosters. Run: pytest"""
 
-from trade_finder import Player, find_trades, lineup_points, tradeable
+import json
+
+from trade_finder import (
+    Player,
+    adjusted,
+    find_trades,
+    lineup_points,
+    load_adjustments,
+    per_game,
+    season_points,
+    season_weeks,
+    tradeable,
+)
 
 SLOTS = {"QB": 1, "RB": 1, "WR": 1, "RB/WR/TE": 1, "BE": 3, "IR": 1}
 
@@ -65,3 +77,68 @@ def test_teams_with_the_same_name_are_both_searched():
     b = [Player("Q3", "QB", 300), Player("R3", "RB", 210), Player("W5", "WR", 205), Player("W6", "WR", 195)]
     trades = find_trades(me, [("Same", a), ("Same", b)], [], SLOTS, min_their_gain=-1000)
     assert any(set(t.get) <= set(a) for t in trades) and any(set(t.get) <= set(b) for t in trades)
+
+
+TWO_RB = {"RB": 2}
+WEEKS = ((5, 1.0), (6, 1.0))
+
+
+def test_two_starters_sharing_a_bye_score_lower_than_different_byes():
+    shared = [Player("A", "RB", 10, bye_week=5), Player("B", "RB", 10, bye_week=5)]
+    split = [Player("A", "RB", 10, bye_week=5), Player("B", "RB", 10, bye_week=6)]
+    assert season_points(shared, TWO_RB, WEEKS) == (20, 0)
+    assert season_points(split, TWO_RB, WEEKS) == (20, 10)
+
+
+def test_playoff_weeks_count_more():
+    periods = {"1": [13], "2": [14], "3": [15, 16]}
+    assert season_weeks(13, periods, reg_season_count=2) == ((13, 1.0), (14, 1.0), (15, 1.25), (16, 1.25))
+    assert season_points([Player("A", "RB", 10)], {"RB": 1}, ((14, 1.0), (15, 1.25))) == (22.5, 10)
+
+
+def test_a_bench_player_covering_a_bye_earns_value():
+    starters = [Player("A", "RB", 10, bye_week=5), Player("B", "RB", 10)]
+    bench = Player("C", "RB", 4)
+    assert season_points([*starters, bench], TWO_RB, WEEKS)[0] - season_points(starters, TWO_RB, WEEKS)[0] == 4
+
+
+def test_adjustment_multiplier_is_clamped_and_out_through_week_removes_a_player():
+    star = Player("A", "RB", 10)
+    assert adjusted(star, {"multiplier": 2.0}).points == 12
+    assert adjusted(star, {"multiplier": 0.1}).points == 8
+    out = adjusted(star, {"out_through_week": 5})
+    assert season_points([out], {"RB": 1}, WEEKS) == (10, 0)
+
+
+def test_worst_week_change_shows_a_trade_that_creates_a_bye_hole():
+    me = [Player("A", "RB", 10, bye_week=5), Player("B", "RB", 10, bye_week=6)]
+    them = [Player("C", "RB", 11, bye_week=5), Player("D", "RB", 1)]
+    trade = find_trades(me, [("Them", them)], [], TWO_RB, min_their_gain=-1000, sizes=((1, 1),), weeks=WEEKS)
+    hole = next(t for t in trade if t.give == (me[1],) and t.get == (them[0],))
+    assert (hole.my_gain, hole.my_worst_week_change) == (1, -10)
+
+
+def test_per_game_skips_a_bye_only_when_it_is_still_ahead():
+    assert per_game(130, bye_week=3, week=6) == 10  # 13 games, weeks 6-18
+    assert per_game(120, bye_week=6, week=6) == 10
+    assert per_game(120, bye_week=10, week=6) == 10
+    assert per_game(0, bye_week=None, week=19) == 0
+
+
+def test_per_game_spreads_points_over_games_after_an_injury():
+    assert per_game(90, bye_week=None, week=6, out_through_week=9) == 10  # plays weeks 10-18
+    assert per_game(80, bye_week=12, week=6, out_through_week=9) == 10
+    assert per_game(90, bye_week=8, week=6, out_through_week=9) == 10
+
+
+def test_null_adjustment_values_are_ignored():
+    star = Player("A", "RB", 10)
+    assert adjusted(star, {"multiplier": None, "out_through_week": None}) == star
+    assert adjusted(star, {"multiplier": "1.1", "out_through_week": "6"}) == Player("A", "RB", 11, out_through_week=6)
+
+
+def test_an_adjustment_for_an_unknown_player_warns(tmp_path, capsys):
+    path = tmp_path / "adjustments.json"
+    path.write_text(json.dumps({"A": {"multiplier": 1.1}, "Ghost": {}}))
+    assert load_adjustments(str(path), ["A", "B"]).keys() == {"A", "Ghost"}
+    assert capsys.readouterr().err == "Adjustment for unknown player ignored: Ghost\n"
