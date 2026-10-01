@@ -108,6 +108,36 @@ your connector URL at the end. If it stops with an error, run `./deploy.sh` agai
 **3. Connect Claude.** At https://claude.ai/customize/connectors, add a custom connector named
 `ESPN Fantasy` with the connector URL. Start a new chat or session so the tools load.
 
+## Coach agent
+
+`agent.py` is a command-line panel of fantasy experts built on the same tools. It needs a Claude API key.
+
+- **Fantasy Fred** thinks in fantasy terms: your scoring, roster slots, bye weeks, waivers and trades.
+- **Analytic Alan** thinks like an NFL coach: roles, injuries, scheme and game script. Alan searches the
+  web for current news, limited to trusted football sites (ESPN, NFL.com, PFF, Rotowire and a few others).
+- **The judge** weighs both, checks the hard rules (no byes, no injured starters, a legal lineup) and decides.
+
+Fred and Alan answer your question on their own, then each reads the other's answer and rebuts it once.
+You see the debate as it happens, then the judge's verdict. If one expert is declined or runs out of steps,
+the rebuttals are skipped and the judge rules on the other's answer plus its own tool checks.
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements-agent.txt
+export ANTHROPIC_API_KEY=...  ESPN_MCP_URL=...   # your connector URL
+.venv/bin/python agent.py lineup     # or waivers, matchup, trades, recap
+.venv/bin/python agent.py "Should I trade Bijan for two receivers?"
+.venv/bin/python agent.py            # chat
+.venv/bin/python agent.py --quick "Is Bijan on bye this week?"   # Fred alone
+```
+
+A panel question usually makes five Claude runs, so expect a minute or more and several times the cost
+of one answer. For quick lookups, `--quick` asks Fred alone. The panel runs on Claude Sonnet 5.5 and stops a
+report at $1.00 (set `MAX_SPEND` to change it); each run prints what it cost.
+
+Without `ESPN_MCP_URL` it runs the server in-process instead, using `LEAGUE_ID`, `ESPN_S2` and `SWID`.
+`agent.py --brief` prints the league brief and each expert's tools, without calling Claude. To tune an
+expert, edit its instructions in `experts/` (`fred.md`, `alan.md`, `judge.md`).
+
 <details>
 <summary><b>Configuration</b></summary>
 
@@ -138,7 +168,7 @@ your connector URL at the end. If it stops with an error, run `./deploy.sh` agai
 <summary><b>Development</b></summary>
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt pytest && .venv/bin/pytest
+python3 -m venv .venv && .venv/bin/pip install -r requirements-agent.txt pytest && .venv/bin/pytest
 ```
 
 The tests run every tool against sample ESPN data from the
