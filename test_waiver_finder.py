@@ -2,8 +2,9 @@
 
 from types import SimpleNamespace
 
+import server
 from trade_finder import Player, replacement
-from waiver_finder import _weekly, best_moves, move_gains
+from waiver_finder import _weekly, best_moves, move_gains, report
 
 SLOTS = {"QB": 1, "RB": 1, "BE": 2, "IR": 1}
 ROSTER = [Player("Q", "QB", 300), Player("R", "RB", 200), Player("Bench", "RB", 50), Player("Bench2", "QB", 40)]
@@ -59,3 +60,22 @@ def test_free_drops_pick_the_lowest_projected_player():
     gains = {(0, 0): 5.0, (0, 1): 5.0}
     assert best_moves(gains, gains, [125.0, 0.0]) == [(0, 1, 5.0, 5.0)]
     assert best_moves(gains, gains, [0.0, 125.0]) == [(0, 0, 5.0, 5.0)]
+
+
+def test_report_lists_the_players_shown_and_ignores_unknown_adjustments(monkeypatch):
+    def espn(name, position, points, slot="BE"):
+        return SimpleNamespace(name=name, position=position, proTeam="ATL", projected_total_points=points,
+                               lineupSlot=slot, stats={})
+
+    me = SimpleNamespace(roster=[espn("Q", "QB", 300, "QB"), espn("R", "RB", 200, "RB"), espn("Bench", "RB", 50)])
+    settings = SimpleNamespace(matchup_periods={"1": [17], "2": [18]}, reg_season_count=1,
+                               position_slot_counts={"QB": 1, "RB": 1, "BE": 1})
+    lg = SimpleNamespace(current_week=17, settings=settings, teams=[me],
+                         free_agents=lambda week, size: [espn("Star", "RB", 250)])
+    monkeypatch.setattr(server, "_team", lambda lg, team_id: me)
+    monkeypatch.setattr(server, "_bye_weeks", lambda lg: {})
+
+    adjustments = {"Star": {"multiplier": 1.1, "source": "espn.com"}, "Ghost Guy": {"multiplier": 0.8}}
+    text, players = report(lg, adjustments)
+    assert "  Star: x1.1. no reason given (espn.com)\n  Ghost Guy: not found, ignored" in text
+    assert players == ["Star", "Bench"]

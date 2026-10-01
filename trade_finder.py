@@ -11,6 +11,7 @@ Run: python trade_finder.py [--top 15] [--min-their-gain -10] [--adjustments FIL
 
 import argparse
 import json
+import math
 import sys
 from dataclasses import dataclass, replace
 from itertools import combinations
@@ -183,20 +184,36 @@ def per_game(season_total: float, bye_week: int | None, week: int, out_through_w
 
 def adjusted(player: Player, adjustment: dict) -> Player:
     """Applies a research adjustment: a multiplier (kept within MULTIPLIER_RANGE) and an out_through_week."""
-    multiplier = min(max(float(adjustment.get("multiplier") or 1.0), MULTIPLIER_RANGE[0]), MULTIPLIER_RANGE[1])
+    raw = adjustment.get("multiplier")
+    multiplier = float(1.0 if raw is None else raw)
+    if not math.isfinite(multiplier):
+        raise ValueError(f"multiplier must be a finite number, not {multiplier}")
+    multiplier = min(max(multiplier, MULTIPLIER_RANGE[0]), MULTIPLIER_RANGE[1])
     out_through_week = int(adjustment.get("out_through_week") or 0)
     return replace(player, points=player.points * multiplier, out_through_week=out_through_week)
 
 
-def load_adjustments(path: str | None, names) -> dict[str, dict]:
-    """Adjustments by player name from a JSON file, if given. Names not among names are reported."""
+def load_adjustments(path: str | None) -> dict[str, dict]:
+    """Adjustments by player name from a JSON file, if given."""
     if not path:
         return {}
     with open(path) as f:
-        adjustments = json.load(f)
-    for name in sorted(adjustments.keys() - set(names)):
-        print(f"Adjustment for unknown player ignored: {name}", file=sys.stderr)
-    return adjustments
+        return json.load(f)
+
+
+def adjustment_lines(adjustments: dict, ignored=()) -> list[str]:
+    """Each adjustment as applied (multiplier kept in range), with its reason and source, then the ignored names,
+    to print above a table."""
+    if not adjustments and not ignored:
+        return []
+    lines = ["Research adjustments to the projections:"]
+    for name, adjustment in adjustments.items():
+        applied = adjusted(Player(name, "", 1.0), adjustment)
+        out = f", out through week {applied.out_through_week}" if applied.out_through_week else ""
+        reason, source = adjustment.get("reason", "no reason given"), adjustment.get("source", "no source")
+        lines.append(f"  {name}: x{applied.points:g}{out}. {reason} ({source})")
+    lines += [f"  {name}: not found, ignored" for name in ignored]
+    return [*lines, ""]
 
 
 def projected_players(espn_players, byes: dict[str, int], week: int, adjustments: dict) -> list[Player]:
@@ -209,18 +226,20 @@ def projected_players(espn_players, byes: dict[str, int], week: int, adjustments
     return players
 
 
-def setup(lg, free_agents, adjustments_path):
-    """(project, weeks) for a script's main: project turns ESPN players into Players, weeks is season_weeks.
-    Adjustment names are checked against free_agents and every roster. Exits when no fantasy weeks are left."""
+def setup(lg, free_agents, adjustments: dict):
+    """(project, weeks, notes) for a script's report: project turns ESPN players into Players, weeks is
+    season_weeks, notes is adjustment_lines, where names not among free_agents or any roster are ignored.
+    Exits when no fantasy weeks are left."""
     import server
 
     weeks = season_weeks(lg.current_week, lg.settings.matchup_periods, lg.settings.reg_season_count)
     if not weeks:
         sys.exit("No fantasy weeks left this season.")
-    everyone = [*free_agents, *(p for t in lg.teams for p in t.roster)]
-    adjustments = load_adjustments(adjustments_path, (p.name for p in everyone))
+    everyone = {p.name for p in [*free_agents, *(p for t in lg.teams for p in t.roster)]}
+    known = {name: adjustment for name, adjustment in adjustments.items() if name in everyone}
+    notes = adjustment_lines(known, sorted(adjustments.keys() - everyone))
     byes = server._bye_weeks(lg)
-    return (lambda players: projected_players(players, byes, lg.current_week, adjustments)), weeks
+    return (lambda players: projected_players(players, byes, lg.current_week, known)), weeks, notes
 
 
 def add_adjustments_argument(parser):
@@ -233,6 +252,39 @@ def weekly_line(weekly: dict[int, float], marked=3) -> str:
     return "  ".join(f"{w}: {pts:.0f}{'*' if w in weakest else ''}" for w, pts in weekly.items())
 
 
+def report(lg, adjustments: dict | None = None, top=15, min_their_gain=0.0) -> tuple[str, list[str]]:
+    """The ranked trades as printed text, and the names of the players in the trades shown."""
+    import server
+
+    adjustments = adjustments or {}
+    me = server._team(lg, None)
+    espn_free_agents = lg.free_agents(size=200)
+    project, weeks, notes = setup(lg, espn_free_agents, adjustments)
+    free_agents = project(espn_free_agents)
+    mine = project(me.roster)
+    others = [(t.team_name, project(t.roster)) for t in lg.teams if t is not me]
+    slots = lg.settings.position_slot_counts
+    trades = find_trades(mine, others, free_agents, slots, min_their_gain, weeks=weeks)
+    shown = trades[:top]
+
+    my_weekly = weekly_points([*mine, *replacement(free_agents)], starting(slots), weeks)
+    names = lambda players: " + ".join(p.name for p in players)  # noqa: E731
+    lines = [
+        *notes,
+        f"Your lineup by week (* weakest): {weekly_line(my_weekly)}\n",
+        f"{len(trades)} trades found. Gains are changes to each starting lineup in rest-of-season points,",
+        f"playoff weeks counting {PLAYOFF_WEIGHT}x. Worst is the change to your lowest week.\n",
+        f"{'Partner':<24} {'You give':<40} {'You get':<40} {'You':>6} {'Them':>6} {'Worst':>6}",
+    ]
+    for t in shown:
+        lines.append(
+            f"{t.partner[:24]:<24} {names(t.give)[:40]:<40} {names(t.get)[:40]:<40} "
+            f"{t.my_gain:>6} {t.their_gain:>6} {t.my_worst_week_change:>6}"
+        )
+    players = list(dict.fromkeys(p.name for t in shown for p in (*t.give, *t.get)))
+    return "\n".join(lines), players
+
+
 def main():
     import server  # reads LEAGUE_ID, ESPN_S2 and SWID from the environment
 
@@ -243,28 +295,7 @@ def main():
     )
     add_adjustments_argument(parser)
     args = parser.parse_args()
-
-    lg = server.league()
-    me = server._team(lg, None)
-    espn_free_agents = lg.free_agents(size=200)
-    project, weeks = setup(lg, espn_free_agents, args.adjustments)
-    free_agents = project(espn_free_agents)
-    mine = project(me.roster)
-    others = [(t.team_name, project(t.roster)) for t in lg.teams if t is not me]
-    slots = lg.settings.position_slot_counts
-    trades = find_trades(mine, others, free_agents, slots, args.min_their_gain, weeks=weeks)
-
-    my_weekly = weekly_points([*mine, *replacement(free_agents)], starting(slots), weeks)
-    names = lambda players: " + ".join(p.name for p in players)  # noqa: E731
-    print(f"Your lineup by week (* weakest): {weekly_line(my_weekly)}\n")
-    print(f"{len(trades)} trades found. Gains are changes to each starting lineup in rest-of-season points,")
-    print(f"playoff weeks counting {PLAYOFF_WEIGHT}x. Worst is the change to your lowest week.\n")
-    print(f"{'Partner':<24} {'You give':<40} {'You get':<40} {'You':>6} {'Them':>6} {'Worst':>6}")
-    for t in trades[: args.top]:
-        print(
-            f"{t.partner[:24]:<24} {names(t.give)[:40]:<40} {names(t.get)[:40]:<40} "
-            f"{t.my_gain:>6} {t.their_gain:>6} {t.my_worst_week_change:>6}"
-        )
+    print(report(server.league(), load_adjustments(args.adjustments), args.top, args.min_their_gain)[0])
 
 
 if __name__ == "__main__":

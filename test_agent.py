@@ -6,6 +6,7 @@ import json
 import anthropic
 import anyio
 import httpx2
+import pytest
 from anthropic.lib.tools.mcp import async_mcp_tool
 from mcp import Client
 from mcp.server.mcpserver import MCPServer
@@ -122,15 +123,17 @@ SEARCH = [
         {"type": "web_search_result", "url": "https://espn.com/bijan", "title": "Bijan", "encrypted_content": "x"}
     ]},
 ]
+BIJAN = {"Bijan Robinson": {"multiplier": 1.1, "reason": "80% of snaps", "source": "espn.com, Sep 30"}}
 # Each speaker's replies in turn, found by the first line of its expert file.
 PANEL = {
     "You are Fantasy Fred": ["FRED TAKE: start Bijan.", "FRED REBUTTAL: agree with Alan."],
-    "You are Analytic Alan": ["ALAN TAKE: Bijan plays 80% of snaps.", "ALAN REBUTTAL: Fred's math holds."],
+    "You are Analytic Alan": [f"ALAN TAKE: Bijan plays 80% of snaps.\n```json\n{json.dumps(BIJAN)}\n```",
+                              "ALAN REBUTTAL: Fred's math holds."],
     "You are the judge": ["VERDICT: start Bijan."],
 }
 
 
-def run_panel(alan_stop="end_turn", alan_rebuttal_stop="end_turn"):
+def run_panel(alan_stop="end_turn", alan_rebuttal_stop="end_turn", request=None):
     requests = {speaker: [] for speaker in PANEL}
 
     def claude(request):
@@ -150,7 +153,8 @@ def run_panel(alan_stop="end_turn", alan_rebuttal_stop="end_turn"):
             tools = [async_mcp_tool(t, mcp) for t in (await mcp.list_tools()).tools]
             log = io.StringIO()
             panel = agent.Panel(fake_claude(claude), tools, await agent.brief(mcp), log=log)
-            return await panel.ask("Start Bijan?"), log.getvalue()
+            answer = agent.respond(panel, request) if request else panel.ask("Start Bijan?")
+            return await answer, log.getvalue()
 
     verdict, log = anyio.run(run)
     return verdict, log, *requests.values()
@@ -193,6 +197,65 @@ def test_a_refused_rebuttal_is_left_out_and_the_judge_is_told():
     ruling = judge[0]["messages"][0]["content"]
     assert "Analytic Alan's rebuttal was cut off or declined" in ruling
     assert "ALAN TAKE" in ruling and "FRED REBUTTAL" in ruling and "ALAN REBUTTAL" not in ruling
+
+
+def run_engine_job(monkeypatch, tmp_path, job, **kwargs):
+    calls = []
+
+    def engine(lg, adjustments=None, top=15):
+        calls.append((lg, adjustments, top))
+        return f"TABLE {len(calls)}", ["Bijan Robinson", "Ja'Marr Chase", *(["Saquon Barkley"] * (len(calls) - 1))]
+
+    monkeypatch.setitem(agent.ENGINES, job, engine)
+    monkeypatch.setattr(agent, "espn_league", lambda: "league")
+    monkeypatch.setattr(agent, "ADJUSTMENTS", tmp_path / "adjustments.json")
+    return calls, *run_panel(request=job, **kwargs)
+
+
+def test_the_trades_job_reranks_the_engine_with_alans_adjustments(monkeypatch, tmp_path):
+    calls, verdict, log, fred, alan, judge = run_engine_job(monkeypatch, tmp_path, "trades")
+
+    assert calls == [("league", None, agent.SHORTLIST), ("league", BIJAN, agent.SHORTLIST)]
+    assert json.loads(agent.ADJUSTMENTS.read_text()) == BIJAN
+    assert not fred and len(alan) == 1 and "## Engine shortlist" in log
+    research = json.dumps(alan[0]["messages"][0]["content"])
+    assert "TABLE 1" in research and "Bijan Robinson, Ja'Marr Chase" in research
+    assert '"max_uses": 15' in json.dumps(alan[0]["tools"])
+    ruling = judge[0]["messages"][0]["content"]
+    assert "TABLE 2\n\nNot researched: Saquon Barkley" in ruling
+    assert "ALAN TAKE" in ruling and "send the other manager" in ruling
+    assert "TABLE 2" in verdict and verdict.endswith("VERDICT: start Bijan.")
+
+
+def test_a_cut_off_research_is_neither_applied_nor_shown(monkeypatch, tmp_path):
+    calls, verdict, log, fred, alan, judge = run_engine_job(monkeypatch, tmp_path, "waivers", alan_stop="max_tokens")
+    assert calls[1][1] == {} and json.loads(agent.ADJUSTMENTS.read_text()) == {}
+    ruling = judge[0]["messages"][0]["content"]
+    assert "ALAN TAKE" not in ruling and "research was cut off" in ruling
+    assert "send the other manager" not in ruling
+
+
+def test_other_jobs_still_go_to_the_whole_panel():
+    verdict, log, fred, alan, judge = run_panel(request="lineup")
+    assert verdict == "## Verdict\n\nVERDICT: start Bijan." and len(fred) == len(alan) == 2
+    assert fred[0]["messages"][0]["content"].endswith(agent.JOBS["lineup"])
+
+
+def test_adjustments_come_from_the_last_json_block(capsys):
+    a = {"multiplier": 1.5, "source": "espn.com"}  # the engine clamps 1.5 to 1.2
+    entries = {"A": a, "B": {"multiplier": "high", "source": "x"}, "C": 3, "D": {"multiplier": 0.9},
+               "E": {"multiplier": float("nan"), "source": "x"}, "F": {"multiplier": 0.9, "source": " "}}
+    assert agent.parse_adjustments(f"Notes.\n```JSON\n{json.dumps(entries)}\n```") == {"A": a}
+    err = capsys.readouterr().err
+    assert all(f"{name} left out" in err for name in "BCDEF")
+    assert agent.parse_adjustments("No block.") == agent.parse_adjustments("```json\n{oops\n```") == {}
+    assert "No valid adjustments block" in capsys.readouterr().err
+
+
+def test_the_engine_jobs_need_the_espn_settings(monkeypatch):
+    monkeypatch.delenv("SWID", raising=False)
+    with pytest.raises(SystemExit, match="set SWID"):
+        agent.espn_league()
 
 
 def test_prompts_differ_by_mode():

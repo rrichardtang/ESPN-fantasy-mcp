@@ -138,6 +138,14 @@ Fred and Alan answer your question on their own, then each reads the other's ans
 You see the debate as it happens, then the judge's verdict. If one expert is declined or runs out of steps,
 the rebuttals are skipped and the judge rules on the other's answer plus its own tool checks.
 
+The `trades` and `waivers` jobs start from `trade_finder.py` or `waiver_finder.py` instead, and Fred sits them
+out. Alan researches the players in the engine's top 8 moves (role, injuries, schedule) and returns cited
+adjustments, which are saved to `adjustments.json`. The engine re-ranks with them, prints each adjustment with
+its reason and source above the new table, and the judge picks the best moves (with a message to send the
+other manager for trades). Edit `adjustments.json` and rerun the plain tool with `--adjustments adjustments.json`
+to try your own numbers. These jobs read ESPN directly, so they need `LEAGUE_ID`, `ESPN_S2` and `SWID` even
+with `ESPN_MCP_URL` set.
+
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements-agent.txt
 export ANTHROPIC_API_KEY=...  ESPN_MCP_URL=...   # your connector URL

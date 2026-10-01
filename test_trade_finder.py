@@ -5,6 +5,7 @@ import json
 from trade_finder import (
     Player,
     adjusted,
+    adjustment_lines,
     find_trades,
     lineup_points,
     load_adjustments,
@@ -106,6 +107,7 @@ def test_adjustment_multiplier_is_clamped_and_out_through_week_removes_a_player(
     star = Player("A", "RB", 10)
     assert adjusted(star, {"multiplier": 2.0}).points == 12
     assert adjusted(star, {"multiplier": 0.1}).points == 8
+    assert adjusted(star, {"multiplier": 0}).points == 8
     out = adjusted(star, {"out_through_week": 5})
     assert season_points([out], {"RB": 1}, WEEKS) == (10, 0)
 
@@ -137,8 +139,9 @@ def test_null_adjustment_values_are_ignored():
     assert adjusted(star, {"multiplier": "1.1", "out_through_week": "6"}) == Player("A", "RB", 11, out_through_week=6)
 
 
-def test_an_adjustment_for_an_unknown_player_warns(tmp_path, capsys):
+def test_adjustments_load_from_a_file_and_print_as_applied(tmp_path):
     path = tmp_path / "adjustments.json"
-    path.write_text(json.dumps({"A": {"multiplier": 1.1}, "Ghost": {}}))
-    assert load_adjustments(str(path), ["A", "B"]).keys() == {"A", "Ghost"}
-    assert capsys.readouterr().err == "Adjustment for unknown player ignored: Ghost\n"
+    path.write_text(json.dumps({"A": {"multiplier": 1.5, "reason": "Lead back", "source": "espn.com, Oct 1"}}))
+    adjustments = load_adjustments(str(path))
+    assert adjustment_lines(adjustments)[1] == "  A: x1.2. Lead back (espn.com, Oct 1)"
+    assert load_adjustments(None) == {} and adjustment_lines({}) == []

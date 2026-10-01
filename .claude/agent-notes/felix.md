@@ -1,1 +1,3 @@
 - ESPN-fantasy-mcp: rounded gains tie often; any argmax over roster needs an explicit tie-break (held value), else falls to index 0.
+- ESPN-fantasy-mcp: engine adjustments path — check name-match (unknown names), source enforcement, and that re-ranked rows were actually researched.
+- ESPN-fantasy-mcp: falsy-default idiom (`x or 1.0`) on LLM-supplied numbers turns 0 into the default; check when parsing model output.

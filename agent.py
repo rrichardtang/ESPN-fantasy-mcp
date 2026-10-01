@@ -9,6 +9,10 @@ rebut each other once, and a judge gives the verdict. Their instructions live in
     python agent.py --quick lineup # ask Fred alone: cheaper and faster
     python agent.py --brief        # show the league brief and each expert's tools, without calling Claude
 
+The trades and waivers jobs start from trade_finder.py or waiver_finder.py instead: Alan researches the players in
+the top moves and returns adjustments (saved to adjustments.json), the engine re-ranks with them, and the judge
+picks from the new table. Fred sits these out.
+
 It talks to your deployed server when ESPN_MCP_URL is set (the connector URL), and otherwise runs
 server.py in-process with the same LEAGUE_ID, ESPN_S2 and SWID settings. Claude needs ANTHROPIC_API_KEY.
 """
@@ -16,6 +20,7 @@ server.py in-process with the same LEAGUE_ID, ESPN_S2 and SWID settings. Claude 
 import asyncio
 import json
 import os
+import re
 import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -23,6 +28,9 @@ from pathlib import Path
 import anthropic
 from anthropic.lib.tools.mcp import async_mcp_tool
 from mcp import Client
+
+import trade_finder
+import waiver_finder
 
 MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5-5")
 # Claude Sonnet 5.5's list prices: dollars per million tokens, and per web search.
@@ -62,6 +70,7 @@ WEB_SEARCH = {
         "rotowire.com", "cbssports.com", "actionnetwork.com",
     ],
 }
+RESEARCH_SEARCH = {**WEB_SEARCH, "max_uses": 15}
 PANEL_NOTES = {
     "fred": """
 For the panel:
@@ -93,6 +102,49 @@ REBUTTAL = """Here is {title}'s take on the same question.
 Give one rebuttal: where you agree, where you disagree and why, and what, if anything, you'd change in \
 your recommendation."""
 
+RESEARCH = """The league's {job} engine ranked these moves from ESPN's rest-of-season projections, scoring each by \
+the week-by-week change to the starting lineup:
+
+<engine_table>
+{table}
+</engine_table>
+
+Research exactly these players: {players}.
+For each: role and usage trend, injuries and the return timeline, and the schedule, including the fantasy playoff \
+weeks (after regular_season_weeks in the league brief).
+
+Then end with one fenced ```json block of adjustments to the projections, keyed by the exact player name above:
+{{"Player Name": {{"multiplier": 0.9, "out_through_week": 7, "reason": "...", "source": "site, date"}}}}
+Rules:
+- No adjustment without a cited source.
+- ESPN's projection total already leaves out games ESPN knows he will miss. Lower the multiplier only for news \
+ESPN hasn't priced in.
+- multiplier stays within 0.8-1.2; 1.0 means the projection is right. Use out_through_week (the last NFL week \
+he misses) only for a player expected to miss games.
+- Leave a player out when the evidence is thin. An empty {{}} block is fine."""
+ENGINE_VERDICT = """<question>
+{question}
+</question>
+
+Fantasy Fred sat this one out: the engine covers the fantasy math. Analytic Alan researched the players in the \
+top moves, and the engine re-ranked them with his adjustments. Moves with a player listed under "Not researched" \
+rest on the raw projection only: prefer researched moves, or name that risk.
+
+<engine_table>
+{table}
+</engine_table>
+
+<alan_notes>
+{notes}
+</alan_notes>
+
+{cut}Give the verdict: your top picks from the table (at most three) and what each does for the lineup, your \
+confidence (high, medium or low), and the one thing that would change it."""
+PITCH = """ For each trade you pick, add a short, friendly message the manager can send the other manager to \
+pitch it."""
+ADJUSTMENTS = Path(__file__).parent / "adjustments.json"
+SHORTLIST = 8
+
 JOBS = {
     "lineup": "Set my best lineup for this week. Compare every starter with my bench, and say which "
     "slots to change. Check injuries, byes, the defenses my borderline players face, and which of my "
@@ -106,6 +158,9 @@ JOBS = {
     "recap": "Recap last week for the whole league: results, standouts, busts, and what it means for "
     "the standings.",
 }
+
+
+ENGINES = {"trades": trade_finder.report, "waivers": waiver_finder.report}
 
 
 def connect() -> Client:
@@ -131,6 +186,42 @@ async def brief(mcp: Client) -> str:
         f"<league_brief>\nToday is {date.today().isoformat()}.\n"
         f"League: {json.dumps(info)}\nStandings: {json.dumps(standings['teams'])}\n</league_brief>"
     )
+
+
+def espn_league():
+    """The league for the engines, which read ESPN directly even when ESPN_MCP_URL is set."""
+    missing = [name for name in ("LEAGUE_ID", "ESPN_S2", "SWID") if not os.environ.get(name)]
+    if missing:
+        raise SystemExit(f"The trades and waivers jobs read ESPN directly: set {', '.join(missing)}.")
+    import server
+
+    return server.league()
+
+
+def usable(adjustment) -> bool:
+    """A dict with a cited source whose values the engine can apply."""
+    if not isinstance(adjustment, dict) or not str(adjustment.get("source") or "").strip():
+        return False
+    try:
+        trade_finder.adjusted(trade_finder.Player("", "", 0.0), adjustment)
+        return True
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def parse_adjustments(text: str) -> dict[str, dict]:
+    """The adjustments in the last ```json block of text. A missing or broken block, or entry, is left out."""
+    blocks = re.findall(r"```json\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
+    try:
+        adjustments = json.loads(blocks[-1]) if blocks else None
+    except json.JSONDecodeError:
+        adjustments = None
+    if not isinstance(adjustments, dict):
+        print("No valid adjustments block from Analytic Alan; using the projections as they are.", file=sys.stderr)
+        return {}
+    for name in [name for name, adjustment in adjustments.items() if not usable(adjustment)]:
+        print(f"Unusable adjustment for {name} left out: {adjustments.pop(name)}", file=sys.stderr)
+    return adjustments
 
 
 class Meter:
@@ -260,6 +351,41 @@ class Panel:
         notes = "".join(CUT_OFF.format(what=what) + "\n\n" for what in lost)
         return await self.judge.ask(f"<question>\n{question}\n</question>\n\n{debate}\n\n{notes}Give the final answer.")
 
+    async def engine_job(self, job: str) -> str:
+        """Alan researches the engine's top moves, the engine re-ranks with his adjustments, and the judge picks."""
+        report = ENGINES[job]
+        lg = await asyncio.to_thread(espn_league)
+        table, researched = await asyncio.to_thread(report, lg, top=SHORTLIST)
+        print(f"\n## Engine shortlist\n\n{table}", file=self.log)
+        prompt = RESEARCH.format(job=job, table=table, players=", ".join(researched))
+        tools, self.alan.tools = self.alan.tools, [RESEARCH_SEARCH, *self.alan.tools[1:]]
+        try:
+            notes = await self._speak(self.alan, prompt, " — research")
+        finally:
+            self.alan.tools = tools
+        if self.alan.complete:
+            adjustments, cut = parse_adjustments(notes), ""
+        else:
+            adjustments, notes, cut = {}, "", CUT_OFF.format(what="Analytic Alan's research") + "\n\n"
+        ADJUSTMENTS.write_text(json.dumps(adjustments, indent=2) + "\n")
+        table, players = await asyncio.to_thread(report, lg, adjustments, top=SHORTLIST)
+        unresearched = [name for name in players if name not in researched]
+        if unresearched:
+            table += f"\n\nNot researched: {', '.join(unresearched)}"
+        verdict = ENGINE_VERDICT.format(question=JOBS[job], table=table, notes=notes, cut=cut)
+        verdict = await self.judge.ask(verdict + (PITCH if job == "trades" else ""))
+        return f"## Engine, with research adjustments\n\n{table}\n\n## Verdict\n\n{verdict}"
+
+
+async def respond(panel: Panel, request: str, quick=False) -> str:
+    """Answers a job name or a question: Fred alone when quick, the engine for trades and waivers, else the panel."""
+    question = JOBS.get(request, request)
+    if quick:
+        return await panel.fred.ask(question)
+    if request in ENGINES:
+        return await panel.engine_job(request)
+    return "## Verdict\n\n" + await panel.ask(question)
+
 
 async def main(args: list[str]) -> None:
     quick = "--quick" in args
@@ -276,12 +402,12 @@ async def main(args: list[str]) -> None:
 
         async def answer(question: str) -> str:
             panel.meter.spent = 0.0
-            text = await panel.fred.ask(question) if quick else "## Verdict\n\n" + await panel.ask(question)
+            text = await respond(panel, question, quick)
             print(f"\nCost: ${panel.meter.spent:.2f} (limit ${MAX_SPEND:.2f})", file=sys.stderr)
             return text
 
         if args:
-            print(await answer(JOBS.get(args[0], " ".join(args))))
+            print(await answer(args[0] if args[0] in JOBS else " ".join(args)))
             return
         print(f"Ask about your league, or type one of: {', '.join(JOBS)}. Ctrl-D quits.")
         while True:
@@ -290,7 +416,7 @@ async def main(args: list[str]) -> None:
             except EOFError:
                 return
             if question:
-                print("\n" + await answer(JOBS.get(question, question)))
+                print("\n" + await answer(question))
 
 
 if __name__ == "__main__":

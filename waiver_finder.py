@@ -14,6 +14,7 @@ from trade_finder import (
     ONE_WEEK,
     Player,
     add_adjustments_argument,
+    load_adjustments,
     replacement,
     season_points,
     setup,
@@ -56,6 +57,40 @@ def _weekly(espn_players, week) -> list[Player]:
     return [Player(p.name, p.position, p.stats.get(week, {}).get("projected_points") or 0.0) for p in espn_players]
 
 
+def report(lg, adjustments: dict | None = None, top=10) -> tuple[str, list[str]]:
+    """Both tables as printed text, and the names of the players added or dropped in the rows shown."""
+    import server
+
+    adjustments = adjustments or {}
+    me = server._team(lg, None)
+    slots = lg.settings.position_slot_counts
+    limit = sum(n for s, n in slots.items() if s != "IR")
+    mine = [p for p in me.roster if p.lineupSlot != "IR"]
+    on_ir = [p for p in me.roster if p.lineupSlot == "IR"]
+    free_agents = lg.free_agents(week=lg.current_week, size=200)
+    project, weeks, notes = setup(lg, free_agents, adjustments)
+    projected = project(free_agents)
+
+    ros = move_gains(project(mine), projected, slots, limit, project(on_ir), weeks, replacement(projected))
+    week = move_gains(_weekly(mine, lg.current_week), _weekly(free_agents, lg.current_week), slots, limit)
+    held = [season_points([p], {p.position: 1}, weeks)[0] for p in project(mine)]
+    drop = lambda d: "nobody" if d is None else mine[d].name  # noqa: E731
+    ros_moves, week_moves = best_moves(ros, ros, held)[:top], best_moves(week, ros, held)[:top]
+
+    lines = [*notes, "Rest of season\n", f"{'Add':<28} {'Drop':<28} {'Gain':>6}"]
+    for a, d, gain, _ in ros_moves:
+        lines.append(f"{free_agents[a].name[:28]:<28} {drop(d)[:28]:<28} {gain:>6}")
+    lines += [
+        f"\nThis week (week {lg.current_week})\n",
+        f"{'Add':<28} {'Drop':<28} {'This week':>9} {'Rest of season':>15}",
+    ]
+    for a, d, gain, cost in week_moves:
+        lines.append(f"{free_agents[a].name[:28]:<28} {drop(d)[:28]:<28} {gain:>9} {cost:>15}")
+    moves = [*ros_moves, *week_moves]
+    players = [free_agents[a].name for a, *_ in moves] + [mine[d].name for _, d, *_ in moves if d is not None]
+    return "\n".join(lines), list(dict.fromkeys(players))
+
+
 def main():
     import server  # reads LEAGUE_ID, ESPN_S2 and SWID from the environment
 
@@ -63,30 +98,7 @@ def main():
     parser.add_argument("--top", type=int, default=10, help="how many pickups to show in each table")
     add_adjustments_argument(parser)
     args = parser.parse_args()
-
-    lg = server.league()
-    me = server._team(lg, None)
-    slots = lg.settings.position_slot_counts
-    limit = sum(n for s, n in slots.items() if s != "IR")
-    mine = [p for p in me.roster if p.lineupSlot != "IR"]
-    on_ir = [p for p in me.roster if p.lineupSlot == "IR"]
-    free_agents = lg.free_agents(week=lg.current_week, size=200)
-    project, weeks = setup(lg, free_agents, args.adjustments)
-    projected = project(free_agents)
-
-    ros = move_gains(project(mine), projected, slots, limit, project(on_ir), weeks, replacement(projected))
-    week = move_gains(_weekly(mine, lg.current_week), _weekly(free_agents, lg.current_week), slots, limit)
-    held = [season_points([p], {p.position: 1}, weeks)[0] for p in project(mine)]
-    drop = lambda d: "nobody" if d is None else mine[d].name  # noqa: E731
-
-    print("Rest of season\n")
-    print(f"{'Add':<28} {'Drop':<28} {'Gain':>6}")
-    for a, d, gain, _ in best_moves(ros, ros, held)[: args.top]:
-        print(f"{free_agents[a].name[:28]:<28} {drop(d)[:28]:<28} {gain:>6}")
-    print(f"\nThis week (week {lg.current_week})\n")
-    print(f"{'Add':<28} {'Drop':<28} {'This week':>9} {'Rest of season':>15}")
-    for a, d, gain, cost in best_moves(week, ros, held)[: args.top]:
-        print(f"{free_agents[a].name[:28]:<28} {drop(d)[:28]:<28} {gain:>9} {cost:>15}")
+    print(report(server.league(), load_adjustments(args.adjustments), args.top)[0])
 
 
 if __name__ == "__main__":
