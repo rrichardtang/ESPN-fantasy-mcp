@@ -1,3 +1,5 @@
 - ESPN-fantasy-mcp: rounded gains tie often; any argmax over roster needs an explicit tie-break (held value), else falls to index 0.
 - ESPN-fantasy-mcp: engine adjustments path — check name-match (unknown names), source enforcement, and that re-ranked rows were actually researched.
 - ESPN-fantasy-mcp: falsy-default idiom (`x or 1.0`) on LLM-supplied numbers turns 0 into the default; check when parsing model output.
+- ESPN-fantasy-mcp: espn_api stats breakdown keeps unmapped ids as strings ('210' = games played, absent on missed/bye weeks); Paper (raw sum) is trivially positive for N-for-1 trades.
+- ESPN-fantasy-mcp: players out for the season (out_through_week >= last week) keep points>0 via per_game's max(games,1) yet plays() is never true; check filters that use .points vs raw_points/plays.

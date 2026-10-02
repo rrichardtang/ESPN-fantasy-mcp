@@ -39,10 +39,10 @@ def get_free_agents() -> str:
     return json.dumps([])
 
 
-def reply(content, stop_reason):
+def reply(content, stop_reason, input_tokens=1):
     return {
         "id": "msg_1", "type": "message", "role": "assistant", "model": agent.MODEL, "content": content,
-        "stop_reason": stop_reason, "stop_sequence": None, "usage": {"input_tokens": 1, "output_tokens": 1},
+        "stop_reason": stop_reason, "stop_sequence": None, "usage": {"input_tokens": input_tokens, "output_tokens": 1},
     }
 
 
@@ -133,7 +133,10 @@ PANEL = {
 }
 
 
-def run_panel(alan_stop="end_turn", alan_rebuttal_stop="end_turn", request=None):
+def run_panel(alan_stop="end_turn", alan_rebuttal_stop="end_turn", request=None, fred_stop="end_turn",
+              alan_looks_up=0):
+    """alan_looks_up: when set, Alan only ever calls a tool, each call costing that many input tokens, and
+    Fred calls one tool before his take."""
     requests = {speaker: [] for speaker in PANEL}
 
     def claude(request):
@@ -141,11 +144,15 @@ def run_panel(alan_stop="end_turn", alan_rebuttal_stop="end_turn", request=None)
         speaker = next(s for s in PANEL if s in json.dumps(body["system"]))
         requests[speaker].append(body)
         turn = len(requests[speaker]) - 1
+        if alan_looks_up and speaker == "You are Analytic Alan":
+            return httpx2.Response(200, json=reply([lookup("a", "Bijan Robinson")], "tool_use", alan_looks_up))
         content = [{"type": "text", "text": PANEL[speaker][turn]}]
-        stop = "end_turn"
+        stop = fred_stop if speaker == "You are Fantasy Fred" and turn == 0 else "end_turn"
         if speaker == "You are Analytic Alan":
             stop = alan_stop if turn == 0 else alan_rebuttal_stop
             content = SEARCH + content if turn == 0 else content
+        if alan_looks_up and speaker == "You are Fantasy Fred" and turn == 0:
+            content, stop = [lookup("f", "Bijan Robinson")], "tool_use"
         return httpx2.Response(200, json=reply(content, stop))
 
     async def run():
@@ -217,13 +224,15 @@ def test_the_trades_job_reranks_the_engine_with_alans_adjustments(monkeypatch, t
 
     assert calls == [("league", None, agent.SHORTLIST), ("league", BIJAN, agent.SHORTLIST)]
     assert json.loads(agent.ADJUSTMENTS.read_text()) == BIJAN
-    assert not fred and len(alan) == 1 and "## Engine shortlist" in log
+    assert len(fred) == len(alan) == 1 and "## Engine shortlist" in log and "## Fantasy Fred" in log
     research = json.dumps(alan[0]["messages"][0]["content"])
-    assert "TABLE 1" in research and "Bijan Robinson, Ja'Marr Chase" in research
+    assert "TABLE 1" in research and "Bijan Robinson, Ja'Marr Chase" in research and "snap share" in research
     assert '"max_uses": 15' in json.dumps(alan[0]["tools"])
+    take = fred[0]["messages"][0]["content"]
+    assert "TABLE 2\n\nNot researched: Saquon Barkley" in take and "ALAN TAKE" in take and "stars against depth" in take
     ruling = judge[0]["messages"][0]["content"]
-    assert "TABLE 2\n\nNot researched: Saquon Barkley" in ruling
-    assert "ALAN TAKE" in ruling and "send the other manager" in ruling
+    assert "TABLE 2\n\nNot researched: Saquon Barkley" in ruling and "sat this one out" not in ruling
+    assert "ALAN TAKE" in ruling and "<fred_take>\nFRED TAKE" in ruling and "send the other manager" in ruling
     assert "TABLE 2" in verdict and verdict.endswith("VERDICT: start Bijan.")
 
 
@@ -232,7 +241,20 @@ def test_a_cut_off_research_is_neither_applied_nor_shown(monkeypatch, tmp_path):
     assert calls[1][1] == {} and json.loads(agent.ADJUSTMENTS.read_text()) == {}
     ruling = judge[0]["messages"][0]["content"]
     assert "ALAN TAKE" not in ruling and "research was cut off" in ruling
-    assert "send the other manager" not in ruling
+    assert "send the other manager" not in ruling and not fred and "Fred sat this one out" in ruling
+    assert "snap share" not in json.dumps(alan[0]["messages"][0]["content"])
+
+
+def test_a_cut_off_fred_take_is_left_out_of_the_trades_verdict(monkeypatch, tmp_path):
+    calls, verdict, log, fred, alan, judge = run_engine_job(monkeypatch, tmp_path, "trades", fred_stop="max_tokens")
+    ruling = judge[0]["messages"][0]["content"]
+    assert "Fantasy Fred's take was cut off" in ruling and "FRED TAKE" not in ruling and "ALAN TAKE" in ruling
+
+
+def test_fred_still_gets_his_say_after_an_expensive_research(monkeypatch, tmp_path):
+    # Each research step costs $0.20: Alan stops at $0.60, past his 45%, leaving Fred room under his 70%.
+    calls, verdict, log, fred, alan, judge = run_engine_job(monkeypatch, tmp_path, "trades", alan_looks_up=100_000)
+    assert len(alan) == 3 and len(fred) == 2 and "<fred_take>\nFRED REBUTTAL" in judge[0]["messages"][0]["content"]
 
 
 def test_other_jobs_still_go_to_the_whole_panel():

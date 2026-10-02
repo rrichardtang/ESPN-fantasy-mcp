@@ -11,7 +11,7 @@ rebut each other once, and a judge gives the verdict. Their instructions live in
 
 The trades and waivers jobs start from trade_finder.py or waiver_finder.py instead: Alan researches the players in
 the top moves and returns adjustments (saved to adjustments.json), the engine re-ranks with them, and the judge
-picks from the new table. Fred sits these out.
+picks from the new tables. For trades, Fred first says which deals are worth it; he sits waivers out.
 
 It talks to your deployed server when ESPN_MCP_URL is set (the connector URL), and otherwise runs
 server.py in-process with the same LEAGUE_ID, ESPN_S2 and SWID settings. Claude needs ANTHROPIC_API_KEY.
@@ -36,9 +36,10 @@ MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5-5")
 # Claude Sonnet 5.5's list prices: dollars per million tokens, and per web search.
 PRICES = {"input": 2.00, "output": 10.00, "cache_read": 0.20, "cache_write": 2.50, "search": 0.01}
 # Most one report (every panel call together) may spend, in dollars. Fred and Alan stop at 70% so the judge
-# always gets to answer.
+# always gets to answer, and in the trades job Alan's research stops at 45% so Fred gets a share too.
 MAX_SPEND = float(os.environ.get("MAX_SPEND", "1.00"))
 EXPERT_SHARE = 0.7
+RESEARCH_SHARE = 0.45
 
 RULES = """You sit on a panel that advises the manager of one ESPN fantasy football league. You read the \
 league through read-only tools.
@@ -112,7 +113,7 @@ the week-by-week change to the starting lineup:
 Research exactly these players: {players}.
 For each: role and usage trend, injuries and the return timeline, and the schedule, including the fantasy playoff \
 weeks (after regular_season_weeks in the league brief).
-
+{focus}
 Then end with one fenced ```json block of adjustments to the projections, keyed by the exact player name above:
 {{"Player Name": {{"multiplier": 0.9, "out_through_week": 7, "reason": "...", "source": "site, date"}}}}
 Rules:
@@ -122,13 +123,13 @@ ESPN hasn't priced in.
 - multiplier stays within 0.8-1.2; 1.0 means the projection is right. Use out_through_week (the last NFL week \
 he misses) only for a player expected to miss games.
 - Leave a player out when the evidence is thin. An empty {{}} block is fine."""
-ENGINE_VERDICT = """<question>
-{question}
-</question>
-
-Fantasy Fred sat this one out: the engine covers the fantasy math. Analytic Alan researched the players in the \
-top moves, and the engine re-ranked them with his adjustments. Moves with a player listed under "Not researched" \
-rest on the raw projection only: prefer researched moves, or name that risk.
+RESEARCH_FOCUS = {
+    "trades": """For each bench candidate, dig into the usage trend: snap share, targets or carries, and \
+depth-chart changes that could grow his role, and flag which ones are genuinely undervalued. For each target, say \
+whether his role is stable or at risk.
+"""
+}
+FRED_TRADES = """The trade engine's tables, re-ranked with Analytic Alan's research adjustments:
 
 <engine_table>
 {table}
@@ -138,8 +139,31 @@ rest on the raw projection only: prefer researched moves, or name that risk.
 {notes}
 </alan_notes>
 
-{cut}Give the verdict: your top picks from the table (at most three) and what each does for the lineup, your \
-confidence (high, medium or low), and the one thing that would change it."""
+{cut}This is a 2-QB, 6-team league where waiver QBs are startable, so a package led by a backup QB may look fairer on \
+the Best ratio than the other manager will feel: weigh that. Give your take on which target trades (consolidating \
+depth into one better player) are worth offering in this league, and which to skip. Then pick the bench candidates \
+worth buying as sleepers, using Alan's research, and say why. Weigh stars against depth for this league's size and \
+waiver wire, read Best and Them as the odds the other manager says yes, and flag bye holes (Worst)."""
+SAT_OUT = "Fantasy Fred sat this one out: the engine covers the fantasy math.\n\n"
+ENGINE_VERDICT = """<question>
+{question}
+</question>
+
+Analytic Alan researched the players in the top moves, and the engine re-ranked them with his adjustments. Moves \
+with a player listed under "Not researched" rest on the raw projection only: prefer researched moves, or name that risk.
+
+<engine_table>
+{table}
+</engine_table>
+
+<alan_notes>
+{notes}
+</alan_notes>
+
+{fred}{cut}This is a 2-QB, 6-team league where waiver QBs are startable, so a package led by a backup QB may look \
+fairer on the Best ratio than the other manager will feel: weigh that. Give the verdict: your top picks from the table \
+(at most three) and what each does for the lineup, your confidence (high, medium or low), and the one thing that would \
+change it."""
 PITCH = """ For each trade you pick, add a short, friendly message the manager can send the other manager to \
 pitch it."""
 ADJUSTMENTS = Path(__file__).parent / "adjustments.json"
@@ -153,8 +177,9 @@ JOBS = {
     "then the best free agents at those positions for this week and next.",
     "matchup": "Scout my matchup this week. Where am I ahead or behind, position by position, and what "
     "could swing it? If games have started, tell me where things stand.",
-    "trades": "Find trades worth offering. Compare my roster's depth with every other team's, name the "
-    "teams whose needs fit my surplus, and suggest fair offers.",
+    "trades": "Find trades worth offering: package one to three of my spare players for another team's RB, WR "
+    "or TE outside its top three, and buy undervalued players off other teams' benches cheaply. Suggest offers the "
+    "other manager would accept.",
     "recap": "Recap last week for the whole league: results, standouts, busts, and what it means for "
     "the standings.",
 }
@@ -352,17 +377,21 @@ class Panel:
         return await self.judge.ask(f"<question>\n{question}\n</question>\n\n{debate}\n\n{notes}Give the final answer.")
 
     async def engine_job(self, job: str) -> str:
-        """Alan researches the engine's top moves, the engine re-ranks with his adjustments, and the judge picks."""
-        report = ENGINES[job]
+        """Alan researches the engine's top moves, the engine re-ranks with his adjustments, Fred weighs in on
+        trades, and the judge picks."""
+        report, trades = ENGINES[job], job == "trades"
         lg = await asyncio.to_thread(espn_league)
         table, researched = await asyncio.to_thread(report, lg, top=SHORTLIST)
         print(f"\n## Engine shortlist\n\n{table}", file=self.log)
-        prompt = RESEARCH.format(job=job, table=table, players=", ".join(researched))
-        tools, self.alan.tools = self.alan.tools, [RESEARCH_SEARCH, *self.alan.tools[1:]]
+        prompt = RESEARCH.format(job=job, table=table, players=", ".join(researched), focus=RESEARCH_FOCUS.get(job, ""))
+        tools, limit = self.alan.tools, self.alan.limit
+        self.alan.tools = [RESEARCH_SEARCH, *tools[1:]]
+        if trades:
+            self.alan.limit = MAX_SPEND * RESEARCH_SHARE
         try:
             notes = await self._speak(self.alan, prompt, " — research")
         finally:
-            self.alan.tools = tools
+            self.alan.tools, self.alan.limit = tools, limit
         if self.alan.complete:
             adjustments, cut = parse_adjustments(notes), ""
         else:
@@ -372,8 +401,15 @@ class Panel:
         unresearched = [name for name in players if name not in researched]
         if unresearched:
             table += f"\n\nNot researched: {', '.join(unresearched)}"
-        verdict = ENGINE_VERDICT.format(question=JOBS[job], table=table, notes=notes, cut=cut)
-        verdict = await self.judge.ask(verdict + (PITCH if job == "trades" else ""))
+        fred = SAT_OUT
+        if trades:
+            take = await self._speak(self.fred, FRED_TRADES.format(table=table, notes=notes, cut=cut))
+            if self.fred.complete:
+                fred = f"<fred_take>\n{take}\n</fred_take>\n\n"
+            else:
+                fred, cut = "", cut + CUT_OFF.format(what="Fantasy Fred's take") + "\n\n"
+        verdict = ENGINE_VERDICT.format(question=JOBS[job], table=table, notes=notes, fred=fred, cut=cut)
+        verdict = await self.judge.ask(verdict + (PITCH if trades else ""))
         return f"## Engine, with research adjustments\n\n{table}\n\n## Verdict\n\n{verdict}"
 
 

@@ -54,23 +54,40 @@ means the current week.
 
 ## Trade finder
 
-`trade_finder.py` lists trades that make your starting lineup better, best first. It runs on your
-computer, not in Claude, with the same `LEAGUE_ID`, `ESPN_S2` and `SWID` settings:
+`trade_finder.py` looks for two kinds of trades. It runs on your computer, not in Claude, with the same
+`LEAGUE_ID`, `ESPN_S2` and `SWID` settings:
 
 ```bash
-python trade_finder.py                        # trades that help both teams
-python trade_finder.py --min-their-gain -10   # also trades that cost the other team up to 10 points
-python trade_finder.py --adjustments notes.json   # with your own research, see below
+python trade_finder.py                          # target trades and bench candidates
+python trade_finder.py --protect-top 4          # leave each team's top 4 alone
+python trade_finder.py --keep "Kyren Williams"  # never offer these players
+python trade_finder.py --max-their-loss 5       # only trades that cost the other lineup at most 5 points
+python trade_finder.py --adjustments notes.json # with your own research, see below
 ```
 
-It scores a trade by how much it changes each team's best starting lineup over the rest of the season,
-using ESPN's projections. A bench player you give away costs you nothing, and any team can pick up the
-best free agents, so a player no better than the waiver wire is worth nothing in a trade. It tries
-1-for-1 and 2-for-1 trades in both directions.
+**Target trades** package one to three of your spare players for any running back, receiver or tight end
+outside another team's top 3 by rest-of-season projection (`--protect-top`). Your own top 2 are never
+offered, nor kickers, defenses or `--keep` players. QBs can be offered but are never targets.
+Roster spots a trade opens are filled from the waiver wire. Each target shows at most 2 packages, and a
+throw-in that helps neither team is dropped.
+
+**Bench candidates** are other teams' bench players who beat the best free agent at their position, listed
+by team with plain signals: points per game, his last 2 games played, and Start% (the share of ESPN teams
+starting him). The engine doesn't rank sleepers; the agent's Alan and Fred judge them. Only the 12 with the
+most points per game are listed, since each one gets researched. Under each is the cheapest 1-for-1 or
+2-for-1 that passes the same tests and doesn't lower your lineup.
+
+A trade is shown when it raises your lineup and the other manager may accept it: the best player you send
+projects at least 75% of the target's rest-of-season points (Best, `--min-best-ratio`), and it costs his
+lineup at most 10 points (`--max-their-loss`).
+
+You and Them score a trade by how much it changes each team's best starting lineup over the rest of the
+season, using ESPN's projections. A bench player you give away costs you nothing, and any team can pick up
+the best free agents, so a player no better than the waiver wire is worth nothing in a trade.
 
 Lineups are built week by week, from each player's projected points per game. A player on a bye is out
 that week, so two starters with the same bye cost you, and a bench player who covers a bye is worth
-something. Playoff weeks count 1.25 times. Above the table you see your lineup's points each week with the
+something. Playoff weeks count 1.25 times. Above the tables you see your lineup's points each week with the
 three weakest marked, and the Worst column shows what a trade does to your lowest week.
 
 `--adjustments` takes a JSON file of your own research:
@@ -138,11 +155,13 @@ Fred and Alan answer your question on their own, then each reads the other's ans
 You see the debate as it happens, then the judge's verdict. If one expert is declined or runs out of steps,
 the rebuttals are skipped and the judge rules on the other's answer plus its own tool checks.
 
-The `trades` and `waivers` jobs start from `trade_finder.py` or `waiver_finder.py` instead, and Fred sits them
-out. Alan researches the players in the engine's top 8 moves (role, injuries, schedule) and returns cited
-adjustments, which are saved to `adjustments.json`. The engine re-ranks with them, prints each adjustment with
-its reason and source above the new table, and the judge picks the best moves (with a message to send the
-other manager for trades). Edit `adjustments.json` and rerun the plain tool with `--adjustments adjustments.json`
+The `trades` and `waivers` jobs start from `trade_finder.py` or `waiver_finder.py` instead. Alan researches the
+players in the engine's top 8 moves (role, injuries, schedule; for trades, the bench candidates' usage trends and
+whether the targets' roles are stable) and returns cited adjustments, which are saved to `adjustments.json`.
+The engine re-ranks with them and prints each adjustment with its reason and source above the new tables. For
+trades, Fred then says which deals are worth it and which bench candidates to buy; he sits waivers out.
+The judge picks the best moves (with a message to send the other manager for trades).
+Edit `adjustments.json` and rerun the plain tool with `--adjustments adjustments.json`
 to try your own numbers. These jobs read ESPN directly, so they need `LEAGUE_ID`, `ESPN_S2` and `SWID` even
 with `ESPN_MCP_URL` set.
 
